@@ -911,59 +911,91 @@ function wireEvents() {
 // ═══════════════════════════════════════════════════
 // BOOT
 // ═══════════════════════════════════════════════════
+function showSignIn(errMsg) {
+  document.getElementById('authScreen').style.display='flex';
+  document.getElementById('mainApp').style.display='none';
+  if(errMsg){
+    const errEl=document.getElementById('authErr');
+    errEl.innerHTML=errMsg;
+    errEl.style.display='block';
+  }
+}
+
+function launchMainApp(accountName) {
+  document.getElementById('userDisplay').textContent=accountName;
+  document.getElementById('authScreen').style.display='none';
+  document.getElementById('mainApp').style.display='grid';
+  wireEvents();
+  try{const c=localStorage.getItem('skp_cfg');if(c){Object.assign(cfg,JSON.parse(c));document.getElementById('cfgOut').value=cfg.outboundDays;document.getElementById('cfgRet').value=cfg.returnDays;document.getElementById('cfgProc').value=cfg.processingDays;}}catch(e){}
+}
+
+function consentRequestUrl() {
+  return `https://login.microsoftonline.com/${TENANT_ID}/v2.0/adminconsent?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT)}&scope=${encodeURIComponent(SCOPES.join(' '))}`;
+}
+
+function consentMsg() {
+  const url=consentRequestUrl();
+  return 'Admin approval needed — <a href="'+url+'" target="_blank" style="color:var(--c-blue-txt);font-weight:700;text-decoration:underline">click here to send an approval request to IT</a>. They\'ll receive a notification and can approve with one click.';
+}
+
+function classifyAuthError(e) {
+  const code=(e.errorCode||'').toLowerCase();
+  const msg=(e.errorMessage||e.message||'').toLowerCase();
+  if(msg.includes('aadsts65001')||msg.includes('aadsts90094')||msg.includes('consent_required')||
+     code==='consent_required'||code==='interaction_required'||msg.includes('admin approval'))
+    return 'consent';
+  if(code==='user_cancelled'||msg.includes('user_cancel')||
+     msg.includes('popup_window_error')||msg.includes('interaction_in_progress'))
+    return 'cancelled';
+  return 'error';
+}
+
 async function boot() {
   await msal.initialize();
-
-  // Handle redirect response (MSAL redirect flow)
   try { await msal.handleRedirectPromise(); } catch(e){}
 
   const accounts=msal.getAllAccounts();
 
-  if (accounts.length > 0) {
-    // Already signed in
-    const acc=accounts[0];
-    document.getElementById('userDisplay').textContent=acc.name||acc.username;
-    document.getElementById('authScreen').style.display='none';
-    document.getElementById('mainApp').style.display='grid';
-    wireEvents();
-    // Restore cfg
-    try{const c=localStorage.getItem('skp_cfg');if(c){Object.assign(cfg,JSON.parse(c));document.getElementById('cfgOut').value=cfg.outboundDays;document.getElementById('cfgRet').value=cfg.returnDays;document.getElementById('cfgProc').value=cfg.processingDays;}}catch(e){}
-    await loadFromSP();
-    renderTimeline();
-  } else {
-    // Show sign-in screen
-    document.getElementById('authScreen').style.display='flex';
-    document.getElementById('btnSignIn').addEventListener('click',async()=>{
-      const errEl=document.getElementById('authErr');
-      errEl.style.display='none';
-      try {
-        const r=await msal.loginPopup({scopes:SCOPES});
-        document.getElementById('userDisplay').textContent=r.account.name||r.account.username;
-        document.getElementById('authScreen').style.display='none';
-        document.getElementById('mainApp').style.display='grid';
-        wireEvents();
-        try{const c=localStorage.getItem('skp_cfg');if(c){Object.assign(cfg,JSON.parse(c));document.getElementById('cfgOut').value=cfg.outboundDays;document.getElementById('cfgRet').value=cfg.returnDays;document.getElementById('cfgProc').value=cfg.processingDays;}}catch(e){}
-        await loadFromSP();
-        renderTimeline();
-      } catch(e) {
-        const code=(e.errorCode||'').toLowerCase();
-        const msg=(e.errorMessage||e.message||'').toLowerCase();
-        const isConsent=msg.includes('aadsts65001')||msg.includes('aadsts90094')||
-                        msg.includes('consent_required')||code==='consent_required'||
-                        code==='interaction_required'||msg.includes('admin approval');
-        const isCancelled=code==='user_cancelled'||msg.includes('user_cancel')||
-                           msg.includes('popup_window_error')||msg.includes('interaction_in_progress');
-        if(isConsent){
-          const url=`https://login.microsoftonline.com/${TENANT_ID}/v2.0/adminconsent?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT)}&scope=${encodeURIComponent(SCOPES.join(' '))}`;
-          errEl.innerHTML='Admin approval needed — <a href="'+url+'" target="_blank" style="color:var(--c-blue-txt);font-weight:700;text-decoration:underline">click here to send an approval request to IT</a>. They\'ll receive a notification and can approve with one click.';
-        } else if(isCancelled){
-          errEl.textContent='Sign-in cancelled — click "Sign in with Microsoft" to try again.';
-        } else {
-          errEl.textContent='Sign-in error: '+(e.message||code||'Unknown error');
-        }
-        errEl.style.display='block';
+  // Wire up sign-in button regardless — used whether we show auth screen now or later
+  document.getElementById('btnSignIn').addEventListener('click',async()=>{
+    const errEl=document.getElementById('authErr');
+    errEl.style.display='none';
+    try {
+      const r=await msal.loginPopup({scopes:SCOPES});
+      launchMainApp(r.account.name||r.account.username);
+      await loadFromSP();
+      renderTimeline();
+    } catch(e) {
+      const kind=classifyAuthError(e);
+      if(kind==='consent'){
+        errEl.innerHTML=consentMsg();
+      } else if(kind==='cancelled'){
+        errEl.textContent='Sign-in cancelled — click "Sign in with Microsoft" to try again.';
+      } else {
+        errEl.textContent='Sign-in error: '+(e.message||e.errorCode||'Unknown error');
       }
-    });
+      errEl.style.display='block';
+    }
+  });
+
+  if (accounts.length > 0) {
+    // There's a cached account — verify the token still works before trusting it
+    try {
+      await msal.acquireTokenSilent({ scopes:SCOPES, account:accounts[0] });
+      // Token OK — go straight to the app
+      launchMainApp(accounts[0].name||accounts[0].username);
+      await loadFromSP();
+      renderTimeline();
+    } catch(e) {
+      // Cached session exists but token is invalid/stale/needs new consent.
+      // Clear the cache and drop back to sign-in screen with a helpful message.
+      try { msal.clearCache(); } catch(x){}
+      const kind=classifyAuthError(e);
+      showSignIn(kind==='consent' ? consentMsg() :
+        'Your session has expired. Please sign in again.');
+    }
+  } else {
+    showSignIn();
   }
 }
 
