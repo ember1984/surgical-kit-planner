@@ -367,11 +367,13 @@ body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; backg
 // ═══════════════════════════════════════════════════
 // CONFIG
 // ═══════════════════════════════════════════════════
-const CLIENT_ID  = 'aec9c908-4730-4818-8eca-31ccad1f3343';
-const TENANT_ID  = '77fe9d03-6f38-4f72-a242-b6595d2ea69d';
-const SP_SITE    = 'https://axisspinetechcom.sharepoint.com/sites/RD647';
-const REDIRECT   = 'https://ember1984.github.io/surgical-kit-planner/surgical_kit_planner.html';
-const SCOPES     = ['https://graph.microsoft.com/Sites.ReadWrite.All'];
+const CLIENT_ID    = 'aec9c908-4730-4818-8eca-31ccad1f3343';
+const TENANT_ID    = '77fe9d03-6f38-4f72-a242-b6595d2ea69d';
+const SP_HOST      = 'axisspinetechcom.sharepoint.com';
+const SP_SITE_REL  = '/sites/RD647';
+const DATA_FILE    = 'General/03. Office Admin/surgical_kit_planner/surgical_kit_data.json';
+const REDIRECT     = 'https://ember1984.github.io/surgical-kit-planner/surgical_kit_planner.html';
+const SCOPES       = ['https://graph.microsoft.com/Files.ReadWrite.All', 'https://graph.microsoft.com/User.Read'];
 const MONTHS     = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const KIT_COLORS = ['#2E90D4','#27AE60','#E67E22','#9B59B6','#E24B4A','#1ABC9C','#F39C12','#3498DB'];
 
@@ -384,8 +386,8 @@ const msalConfig = {
 };
 const msal = new window.msal.PublicClientApplication(msalConfig);
 
-let accessToken = null;
-let spSiteId    = null;
+let driveId   = null;
+let saveTimer = null;
 
 async function getToken() {
   const accounts = msal.getAllAccounts();
@@ -405,83 +407,48 @@ async function graphGet(path) {
   const tok = await getToken();
   if (!tok) return null;
   const r = await fetch(`https://graph.microsoft.com/v1.0${path}`, {
-    headers:{ Authorization:`Bearer ${tok}`, 'Content-Type':'application/json' }
+    headers:{ Authorization:`Bearer ${tok}` }
   });
   if (!r.ok) return null;
   return r.json();
 }
 
-async function graphPost(path, body, method='POST') {
-  const tok = await getToken();
-  if (!tok) return null;
-  const r = await fetch(`https://graph.microsoft.com/v1.0${path}`, {
-    method, headers:{ Authorization:`Bearer ${tok}`, 'Content-Type':'application/json' },
-    body: JSON.stringify(body)
-  });
-  if (!r.ok) { console.error('Graph error', r.status, await r.text()); return null; }
-  if (r.status === 204) return {};
-  return r.json();
-}
-
-async function getSiteId() {
-  if (spSiteId) return spSiteId;
-  const host = 'axisspinetechcom.sharepoint.com';
-  const path = '/sites/RD647';
-  const r = await graphGet(`/sites/${host}:${path}`);
-  if (r?.id) { spSiteId = r.id; return spSiteId; }
+async function getDriveId() {
+  if (driveId) return driveId;
+  const r = await graphGet(`/sites/${SP_HOST}:${SP_SITE_REL}:/drive`);
+  if (r?.id) { driveId = r.id; return driveId; }
   return null;
 }
 
-async function getListId(listName) {
-  const sid = await getSiteId();
-  if (!sid) return null;
-  const r = await graphGet(`/sites/${sid}/lists?$filter=displayName eq '${listName}'&$select=id`);
-  return r?.value?.[0]?.id || null;
-}
-
-// ═══════════════════════════════════════════════════
-// SP LIST OPERATIONS
-// ═══════════════════════════════════════════════════
-let listIds = {};
-
-async function ensureListIds() {
-  if (listIds.Surgeries) return;
-  const [s,k,sg] = await Promise.all([
-    getListId('Surgeries'), getListId('SurgicalKits'), getListId('Surgeons')
-  ]);
-  listIds = { Surgeries:s, SurgicalKits:k, Surgeons:sg };
-}
-
-async function spGetItems(listName, select='') {
-  const sid = await getSiteId();
-  const lid = listIds[listName];
-  if (!sid || !lid) return [];
-  const q = select ? `?$select=${select}&$top=500` : '?$top=500';
-  const r = await graphGet(`/sites/${sid}/lists/${lid}/items${q}&$expand=fields`);
-  return r?.value || [];
-}
-
-async function spCreateItem(listName, fields) {
-  const sid = await getSiteId();
-  const lid = listIds[listName];
-  if (!sid || !lid) return null;
-  return graphPost(`/sites/${sid}/lists/${lid}/items`, { fields });
-}
-
-async function spUpdateItem(listName, itemId, fields) {
-  const sid = await getSiteId();
-  const lid = listIds[listName];
-  if (!sid || !lid) return null;
-  return graphPost(`/sites/${sid}/lists/${lid}/items/${itemId}/fields`, fields, 'PATCH');
-}
-
-async function spDeleteItem(listName, itemId) {
-  const sid = await getSiteId();
-  const lid = listIds[listName];
-  if (!sid || !lid) return;
+async function loadDataFile() {
+  const did = await getDriveId();
+  if (!did) return null;
   const tok = await getToken();
-  await fetch(`https://graph.microsoft.com/v1.0/sites/${sid}/lists/${lid}/items/${itemId}`,
-    { method:'DELETE', headers:{ Authorization:`Bearer ${tok}` }});
+  const r = await fetch(`https://graph.microsoft.com/v1.0/drives/${did}/root:/${DATA_FILE}:/content`, {
+    headers:{ Authorization:`Bearer ${tok}` }
+  });
+  if (r.status === 404) return null;
+  if (!r.ok) return null;
+  return r.json();
+}
+
+async function saveDataFile() {
+  const did = await getDriveId();
+  if (!did) return;
+  showSaving(true);
+  const tok = await getToken();
+  await fetch(`https://graph.microsoft.com/v1.0/drives/${did}/root:/${DATA_FILE}:/content`, {
+    method: 'PUT',
+    headers:{ Authorization:`Bearer ${tok}`, 'Content-Type':'application/json' },
+    body: JSON.stringify(data)
+  });
+  showSaving(false);
+  setStatus('ok', 'Synced');
+}
+
+function autoSave() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveDataFile, 1000);
 }
 
 // ═══════════════════════════════════════════════════
@@ -514,49 +481,21 @@ let viewMonth = new Date().getMonth();
 let editingId = null;
 
 // ═══════════════════════════════════════════════════
-// LOAD FROM SHAREPOINT
+// LOAD DATA
 // ═══════════════════════════════════════════════════
 async function loadFromSP() {
   setStatus('spin', 'Loading data...');
-  await ensureListIds();
-
-  const [kItems, sItems, sgItems] = await Promise.all([
-    spGetItems('SurgicalKits'), spGetItems('Surgeries'), spGetItems('Surgeons')
-  ]);
-
-  if (kItems.length) {
-    data.kits = kItems.map(i => ({
-      id: 'k'+i.id, spId:i.id,
-      name:  i.fields.Title || '',
-      color: i.fields.Color || KIT_COLORS[0],
-      active: i.fields.Active !== false
-    }));
-  } else { data.kits = DEMO.kits; }
-
-  if (sgItems.length) {
-    data.surgeons = sgItems.map(i => {
-      let hs = [];
-      try { hs = JSON.parse(i.fields.Hospitals || '[]'); } catch(e) { hs = (i.fields.Hospitals||'').split('\n').filter(Boolean); }
-      return { id:'sg'+i.id, spId:i.id, name:i.fields.Title||'', hospitals:hs };
-    });
-  } else { data.surgeons = DEMO.surgeons; }
-
-  if (sItems.length) {
-    data.surgeries = sItems.map(i => ({
-      id: 's'+i.id, spId:i.id,
-      date:     (i.fields.SurgeryDate||'').slice(0,10),
-      surgeon:  i.fields.Surgeon  || '',
-      hospital: i.fields.Hospital || '',
-      kitId:    i.fields.KitId    || null,
-      notes:    i.fields.Notes    || '',
-      status:   i.fields.Status   || 'scheduled',
-      outboundDays:   i.fields.OutboundDays   != null ? +i.fields.OutboundDays   : null,
-      returnDays:     i.fields.ReturnDays     != null ? +i.fields.ReturnDays     : null,
-      processingDays: i.fields.ProcessingDays != null ? +i.fields.ProcessingDays : null,
-    }));
-  } else { data.surgeries = DEMO.surgeries; }
-
-  setStatus('ok', 'Synced with SharePoint');
+  const saved = await loadDataFile();
+  if (saved) {
+    if (saved.kits?.length)      data.kits      = saved.kits;
+    if (saved.surgeons?.length)  data.surgeons  = saved.surgeons;
+    if (saved.surgeries)         data.surgeries = saved.surgeries;
+  } else {
+    data.kits      = DEMO.kits;
+    data.surgeons  = DEMO.surgeons;
+    data.surgeries = [];
+  }
+  setStatus('ok', 'Loaded');
 }
 
 // ═══════════════════════════════════════════════════
@@ -566,62 +505,10 @@ function showSaving(on) {
   document.getElementById('savingBadge').classList.toggle('show', on);
 }
 
-async function saveSurgery(s) {
-  showSaving(true);
-  const fields = {
-    Title:          `${s.surgeon} – ${s.hospital} – ${s.date}`,
-    SurgeryDate:    s.date,
-    Surgeon:        s.surgeon,
-    Hospital:       s.hospital,
-    KitId:          s.kitId || '',
-    Notes:          s.notes || '',
-    Status:         s.status || 'scheduled',
-    OutboundDays:   s.outboundDays   != null ? s.outboundDays   : null,
-    ReturnDays:     s.returnDays     != null ? s.returnDays     : null,
-    ProcessingDays: s.processingDays != null ? s.processingDays : null,
-  };
-  // Remove nulls — Graph API doesn't like null on number fields
-  Object.keys(fields).forEach(k => { if (fields[k] === null) delete fields[k]; });
-
-  if (s.spId) {
-    await spUpdateItem('Surgeries', s.spId, fields);
-  } else {
-    const r = await spCreateItem('Surgeries', fields);
-    if (r?.id) s.spId = r.id;
-  }
-  showSaving(false);
-}
-
-async function deleteSurgery(s) {
-  if (!s.spId) return;
-  showSaving(true);
-  await spDeleteItem('Surgeries', s.spId);
-  showSaving(false);
-}
-
-async function saveSurgeon(sg) {
-  showSaving(true);
-  const fields = { Title: sg.name, Hospitals: JSON.stringify(sg.hospitals) };
-  if (sg.spId) {
-    await spUpdateItem('Surgeons', sg.spId, fields);
-  } else {
-    const r = await spCreateItem('Surgeons', fields);
-    if (r?.id) sg.spId = r.id;
-  }
-  showSaving(false);
-}
-
-async function saveKit(k) {
-  showSaving(true);
-  const fields = { Title:k.name, Color:k.color, Active:k.active };
-  if (k.spId) {
-    await spUpdateItem('SurgicalKits', k.spId, fields);
-  } else {
-    const r = await spCreateItem('SurgicalKits', fields);
-    if (r?.id) k.spId = r.id;
-  }
-  showSaving(false);
-}
+async function saveSurgery(s)  { autoSave(); }
+async function deleteSurgery(s){ autoSave(); }
+async function saveSurgeon(sg) { autoSave(); }
+async function saveKit(k)      { autoSave(); }
 
 // ═══════════════════════════════════════════════════
 // DATE / LOGIC HELPERS
@@ -853,8 +740,8 @@ function renderSurgeonsList() {
   document.querySelectorAll('[data-del-sg]').forEach(btn=>btn.addEventListener('click',async()=>{
     if(!confirm('Remove this surgeon?'))return;
     const sg=data.surgeons.find(x=>x.id===btn.dataset.delSg);
-    if(sg?.spId){showSaving(true);await spDeleteItem('Surgeons',sg.spId);showSaving(false);}
     data.surgeons=data.surgeons.filter(x=>x.id!==btn.dataset.delSg);
+    autoSave();
     renderSurgeonsList();renderTimeline();
   }));
 }
