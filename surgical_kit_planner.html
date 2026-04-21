@@ -1,0 +1,1031 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Surgical Kit Planner</title>
+
+<!--
+  ═══════════════════════════════════════════════════════════════
+  SURGICAL KIT PLANNER — SharePoint / Microsoft Graph Edition
+  ═══════════════════════════════════════════════════════════════
+  SETUP (one-time, already done):
+    Client ID  : aec9c908-4730-4818-8eca-31ccad1f3343
+    Tenant ID  : 77fe9d03-6f38-4f72-a242-b6595d2ea69d
+    Redirect   : https://axisspinetechcom.sharepoint.com/sites/RD647/Shared%20Documents/General/03.%20Office%20Admin/surgical_kit_planner/surgical_kit_planner.html
+    SP Site    : https://axisspinetechcom.sharepoint.com/sites/RD647
+
+  SHAREPOINT LISTS REQUIRED (create these once in your SP site):
+    1. SurgicalKits  — columns: Title(text), Color(text), Active(yes/no)
+    2. Surgeries     — columns: Title(text), SurgeryDate(date), Surgeon(text),
+                                Hospital(text), KitId(text), Notes(text),
+                                OutboundDays(number), ReturnDays(number),
+                                ProcessingDays(number), Status(text)
+    3. Surgeons      — columns: Title(text), Hospitals(multi-line text)
+
+  HOW TO HOST:
+    - Save this file as surgical-kit-planner.aspx (or .html) in your
+      SharePoint Site Pages library, OR embed via a Script Editor web part.
+    - First visit will prompt users to sign in with their M365 account once.
+      After that, sign-in is silent/automatic.
+  ═══════════════════════════════════════════════════════════════
+-->
+
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
+
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --c-bg:#f7f6f3; --c-surf:#fff; --c-border:rgba(0,0,0,0.09); --c-border-mid:rgba(0,0,0,0.17);
+  --c-text:#1a1a1a; --c-muted:#666; --c-hint:#999;
+  --c-amber-fill:#FFF3CD; --c-amber-bd:#E6A817; --c-amber-txt:#7B4F00;
+  --c-blue-fill:#DCF0FF;  --c-blue-bd:#2E90D4;  --c-blue-txt:#0A4A7A;
+  --c-green-fill:#D6F5E3; --c-green-bd:#27AE60; --c-green-txt:#145A32;
+  --c-purple-fill:#EDE9FF;--c-purple-bd:#7C5CDB;--c-purple-txt:#3B2480;
+  --c-red-fill:#FDEAEA;   --c-red-bd:#E24B4A;   --c-red-txt:#7A1F1F;
+  --c-gray-fill:#F0EFEA;
+  --radius:6px; --radius-lg:10px;
+}
+@media (prefers-color-scheme:dark){:root{
+  --c-bg:#1a1a1a; --c-surf:#242424; --c-border:rgba(255,255,255,0.09); --c-border-mid:rgba(255,255,255,0.17);
+  --c-text:#f0f0f0; --c-muted:#aaa; --c-hint:#555;
+  --c-amber-fill:#3D2F00; --c-amber-bd:#C8941A; --c-amber-txt:#FFD97D;
+  --c-blue-fill:#0A2A40;  --c-blue-bd:#2E90D4;  --c-blue-txt:#8FD0FF;
+  --c-green-fill:#0A2D1A; --c-green-bd:#27AE60; --c-green-txt:#7DEBB0;
+  --c-purple-fill:#1E1440;--c-purple-bd:#7C5CDB;--c-purple-txt:#C4B4FF;
+  --c-red-fill:#2D0A0A;   --c-red-bd:#E24B4A;   --c-red-txt:#FFB3B3;
+  --c-gray-fill:#2A2A2A;
+}}
+
+body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:var(--c-bg); color:var(--c-text); font-size:14px; line-height:1.5; min-height:100vh; -webkit-text-size-adjust:100%; }
+
+/* ── Layout ── */
+.app { display:grid; grid-template-rows:auto 1fr; min-height:100vh; }
+.topbar { background:var(--c-surf); border-bottom:1px solid var(--c-border); padding:0 16px; display:flex; align-items:center; gap:10px; height:50px; flex-shrink:0; position:sticky; top:0; z-index:50; }
+.topbar-title { font-size:14px; font-weight:700; margin-right:auto; display:flex; align-items:center; gap:7px; white-space:nowrap; }
+.topbar-title svg { width:16px; height:16px; opacity:0.6; flex-shrink:0; }
+.status-dot { width:7px; height:7px; border-radius:50%; background:#bbb; flex-shrink:0; transition:background .3s; }
+.status-dot.ok  { background:#27AE60; }
+.status-dot.err { background:#E24B4A; }
+.status-dot.spin { background:#E6A817; animation:pulse 1s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+.status-txt { font-size:11px; color:var(--c-muted); white-space:nowrap; }
+.sync-txt { font-size:11px; color:var(--c-muted); }
+
+.main { display:grid; grid-template-columns:220px 1fr; }
+@media(max-width:700px){ .main{ grid-template-columns:1fr; } .sidebar{ display:none; } .sidebar.open{ display:flex; position:fixed; inset:50px 0 0 0; z-index:40; overflow-y:auto; } }
+.sidebar { background:var(--c-surf); border-right:1px solid var(--c-border); padding:14px 11px; display:flex; flex-direction:column; gap:13px; overflow-y:auto; }
+.content { padding:16px 18px; overflow:auto; min-width:0; }
+
+/* ── Sidebar ── */
+.s-label { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.07em; color:var(--c-hint); margin-bottom:6px; }
+.divider { height:1px; background:var(--c-border); flex-shrink:0; }
+.kit-chip { display:flex; align-items:center; gap:6px; padding:5px 7px; border-radius:var(--radius); font-size:12px; cursor:default; }
+.kit-chip:hover { background:var(--c-bg); }
+.kit-dot { width:10px; height:10px; border-radius:2px; flex-shrink:0; }
+.kit-name { font-weight:600; flex:1; }
+.pill { font-size:10px; padding:2px 7px; border-radius:10px; font-weight:700; }
+.pill-available  { background:var(--c-green-fill);  color:var(--c-green-txt); }
+.pill-transit    { background:var(--c-blue-fill);   color:var(--c-blue-txt); }
+.pill-surgery    { background:var(--c-amber-fill);  color:var(--c-amber-txt); }
+.pill-processing { background:var(--c-purple-fill); color:var(--c-purple-txt); }
+.s-row { display:flex; align-items:center; justify-content:space-between; font-size:12px; margin-bottom:6px; }
+.s-row label { color:var(--c-muted); }
+.s-row input[type=number] { width:46px; padding:3px 5px; border:1px solid var(--c-border-mid); border-radius:var(--radius); font-size:12px; background:var(--c-bg); color:var(--c-text); text-align:center; }
+.unassigned-card { background:var(--c-red-fill); border:1px solid var(--c-red-bd); border-radius:var(--radius); padding:6px 9px; font-size:12px; cursor:pointer; margin-bottom:5px; }
+.unassigned-card:hover { filter:brightness(.95); }
+.ua-date { font-weight:700; color:var(--c-red-txt); }
+.ua-info { color:var(--c-muted); font-size:11px; margin-top:1px; }
+.badge-red { background:var(--c-red-fill); color:var(--c-red-txt); border:1px solid var(--c-red-bd); border-radius:10px; font-size:10px; padding:1px 6px; font-weight:700; margin-left:4px; }
+
+/* ── Buttons ── */
+.btn { display:inline-flex; align-items:center; justify-content:center; gap:5px; padding:6px 13px; border-radius:var(--radius); font-size:13px; font-weight:500; cursor:pointer; border:1px solid var(--c-border-mid); background:var(--c-surf); color:var(--c-text); transition:background .12s; white-space:nowrap; }
+.btn:hover { background:var(--c-bg); }
+.btn:disabled { opacity:.45; cursor:not-allowed; }
+.btn-primary { background:#2E90D4; color:#fff; border-color:#2E90D4; }
+.btn-primary:hover { background:#1D6FA4; border-color:#1D6FA4; }
+.btn-sm { padding:3px 9px; font-size:12px; }
+.btn-danger { color:var(--c-red-txt); border-color:var(--c-red-bd); }
+.btn-danger:hover { background:var(--c-red-fill); }
+.btn-block { width:100%; margin-bottom:5px; }
+
+/* ── Calendar header ── */
+.cal-hdr { display:flex; align-items:center; gap:9px; margin-bottom:12px; flex-wrap:wrap; }
+.cal-nav { display:flex; align-items:center; gap:5px; }
+.cal-nav button { width:28px; height:28px; border:1px solid var(--c-border-mid); border-radius:var(--radius); background:var(--c-surf); color:var(--c-text); cursor:pointer; font-size:15px; display:flex; align-items:center; justify-content:center; }
+.cal-nav button:hover { background:var(--c-bg); }
+.cal-month { font-size:15px; font-weight:700; min-width:130px; }
+.cal-stats { margin-left:auto; display:flex; gap:7px; }
+.stat-card { background:var(--c-surf); border:1px solid var(--c-border); border-radius:var(--radius); padding:4px 10px; text-align:center; }
+.stat-val { font-size:16px; font-weight:700; line-height:1.1; }
+.stat-lbl { font-size:10px; color:var(--c-muted); }
+.stat-card.warn .stat-val { color:#E24B4A; }
+
+/* ── Legend ── */
+.legend { display:flex; gap:11px; flex-wrap:wrap; margin-bottom:11px; }
+.leg { display:flex; align-items:center; gap:5px; font-size:11px; color:var(--c-muted); }
+.leg-box { width:24px; height:11px; border-radius:2px; flex-shrink:0; }
+
+/* ── Timeline ── */
+.tl-wrap { background:var(--c-surf); border:1px solid var(--c-border); border-radius:var(--radius-lg); overflow:hidden; }
+.tl-head { display:flex; background:var(--c-gray-fill); border-bottom:1px solid var(--c-border); }
+.tl-kit-col { width:82px; flex-shrink:0; border-right:1px solid var(--c-border); padding:5px 8px; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--c-hint); }
+.tl-days-head { display:flex; flex:1; overflow:hidden; }
+.tl-day-lbl { flex:1; text-align:center; font-size:10px; color:var(--c-muted); padding:2px 0; border-right:1px solid var(--c-border); font-weight:500; line-height:1.2; min-width:0; }
+.tl-day-lbl:last-child { border-right:none; }
+.tl-day-lbl.is-today { color:#2E90D4; font-weight:800; }
+.tl-day-lbl.is-wknd { color:var(--c-hint); }
+.tl-row { display:flex; border-bottom:1px solid var(--c-border); min-height:34px; align-items:stretch; }
+.tl-row:last-child { border-bottom:none; }
+.tl-kit-lbl { width:82px; flex-shrink:0; border-right:1px solid var(--c-border); display:flex; align-items:center; padding:0 7px; gap:5px; background:var(--c-gray-fill); }
+.tl-kit-dot { width:8px; height:8px; border-radius:2px; flex-shrink:0; }
+.tl-kit-name { font-size:11px; font-weight:700; }
+.tl-cells { display:flex; flex:1; position:relative; overflow:hidden; }
+.tl-cell { flex:1; border-right:1px solid var(--c-border); min-width:0; }
+.tl-cell:last-child { border-right:none; }
+.tl-cell.is-wknd { background:rgba(0,0,0,.02); }
+.tl-cell.is-today { background:rgba(46,144,212,.05); }
+.span-layer { position:absolute; inset:0; pointer-events:none; overflow:hidden; }
+.t-span { position:absolute; top:3px; bottom:3px; border-radius:3px; display:flex; align-items:center; overflow:hidden; pointer-events:all; cursor:pointer; }
+.t-span:hover { filter:brightness(.88); z-index:5; }
+.t-span-lbl { font-size:10px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding:0 4px; }
+.span-surgery { border:1.5px solid; }
+.span-transit { border:1.5px dashed; opacity:.55; }
+.span-proc { background:var(--c-purple-fill) !important; border:1.5px dashed var(--c-purple-bd) !important; opacity:.5; }
+.span-proc .t-span-lbl { color:var(--c-purple-txt) !important; }
+.custom-dot { position:absolute; top:3px; right:3px; width:5px; height:5px; border-radius:50%; background:var(--c-amber-bd); }
+
+/* ── Modal ── */
+.overlay { position:fixed; inset:0; background:rgba(0,0,0,.38); z-index:100; display:flex; align-items:center; justify-content:center; padding:16px; }
+.modal { background:var(--c-surf); border-radius:var(--radius-lg); width:100%; max-width:450px; display:flex; flex-direction:column; max-height:92vh; box-shadow:0 8px 32px rgba(0,0,0,.15); }
+.modal-hdr { padding:13px 16px 11px; border-bottom:1px solid var(--c-border); display:flex; align-items:center; justify-content:space-between; flex-shrink:0; }
+.modal-title { font-size:14px; font-weight:700; }
+.modal-x { width:24px; height:24px; border:none; background:none; cursor:pointer; font-size:16px; color:var(--c-muted); border-radius:var(--radius); display:flex; align-items:center; justify-content:center; }
+.modal-x:hover { background:var(--c-bg); }
+.modal-body { padding:13px 16px; overflow-y:auto; }
+.modal-ftr { padding:10px 16px; border-top:1px solid var(--c-border); display:flex; gap:7px; justify-content:flex-end; flex-shrink:0; }
+.f-field { margin-bottom:11px; }
+.f-lbl { display:block; font-size:11px; font-weight:700; color:var(--c-muted); margin-bottom:4px; text-transform:uppercase; letter-spacing:.04em; }
+.f-input { width:100%; padding:7px 9px; border:1px solid var(--c-border-mid); border-radius:var(--radius); font-size:13px; background:var(--c-bg); color:var(--c-text); outline:none; -webkit-appearance:none; }
+.f-input:focus { border-color:#2E90D4; box-shadow:0 0 0 3px rgba(46,144,212,.13); }
+.f-hint { font-size:11px; color:var(--c-hint); margin-top:3px; }
+.f-hint.warn { color:var(--c-amber-bd); font-weight:600; }
+.conflict-warn { background:var(--c-red-fill); border:1px solid var(--c-red-bd); border-radius:var(--radius); padding:7px 10px; font-size:12px; color:var(--c-red-txt); margin-bottom:10px; display:none; }
+.transit-box { background:var(--c-gray-fill); border-radius:var(--radius); padding:9px 11px; margin-bottom:11px; }
+.transit-hdr { display:flex; align-items:center; justify-content:space-between; margin-bottom:7px; }
+.transit-title { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--c-muted); }
+.transit-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:7px; }
+.transit-field label { display:block; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--c-hint); margin-bottom:3px; }
+.transit-field input { width:100%; padding:5px 7px; border:1px solid var(--c-border-mid); border-radius:var(--radius); font-size:13px; background:var(--c-surf); color:var(--c-text); text-align:center; outline:none; }
+.transit-field input:focus { border-color:#2E90D4; }
+.transit-hint { font-size:11px; margin-top:6px; color:var(--c-hint); }
+.transit-hint.is-custom { color:var(--c-amber-bd); font-weight:600; }
+
+/* ── Auth screen ── */
+.auth-screen { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100vh; gap:16px; padding:32px; text-align:center; }
+.auth-logo { width:48px; height:48px; background:#2E90D4; border-radius:12px; display:flex; align-items:center; justify-content:center; }
+.auth-logo svg { width:28px; height:28px; stroke:#fff; }
+.auth-title { font-size:20px; font-weight:700; }
+.auth-sub { font-size:14px; color:var(--c-muted); max-width:300px; }
+.auth-err { color:var(--c-red-txt); font-size:13px; background:var(--c-red-fill); border:1px solid var(--c-red-bd); border-radius:var(--radius); padding:8px 14px; max-width:360px; display:none; }
+
+/* ── Saving indicator ── */
+.saving-badge { font-size:11px; color:var(--c-amber-txt); background:var(--c-amber-fill); border:1px solid var(--c-amber-bd); border-radius:10px; padding:2px 8px; display:none; }
+.saving-badge.show { display:inline-block; }
+
+/* ── Mobile menu button ── */
+.menu-btn { display:none; }
+@media(max-width:700px){ .menu-btn{ display:flex; } }
+
+.tooltip { position:fixed; background:#1a1a1a; color:#f0f0f0; font-size:11px; padding:5px 9px; border-radius:var(--radius); pointer-events:none; z-index:200; max-width:210px; line-height:1.5; white-space:pre-line; }
+</style>
+</head>
+<body>
+
+<!-- AUTH SCREEN (shown before sign-in) -->
+<div id="authScreen" class="auth-screen">
+  <div class="auth-logo">
+    <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"/>
+    </svg>
+  </div>
+  <div class="auth-title">Surgical Kit Planner</div>
+  <div class="auth-sub">Sign in with your Axis Spine Technologies Microsoft 365 account to continue.</div>
+  <div class="auth-err" id="authErr"></div>
+  <button class="btn btn-primary" id="btnSignIn" style="padding:10px 28px;font-size:14px">Sign in with Microsoft</button>
+</div>
+
+<!-- MAIN APP (hidden until signed in) -->
+<div class="app" id="mainApp" style="display:none">
+  <div class="topbar">
+    <button class="btn btn-sm menu-btn" id="btnMenu">&#9776;</button>
+    <div class="topbar-title">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"/>
+      </svg>
+      Surgical Kit Planner
+    </div>
+    <div class="status-dot" id="statusDot"></div>
+    <span class="status-txt" id="statusTxt"></span>
+    <span class="saving-badge" id="savingBadge">Saving...</span>
+    <span id="userDisplay" style="font-size:11px;color:var(--c-muted)"></span>
+    <button class="btn btn-sm btn-primary" id="btnAdd">+ Surgery</button>
+  </div>
+
+  <div class="main">
+    <div class="sidebar" id="sidebar">
+      <div>
+        <div class="s-label">Global transit defaults</div>
+        <div class="s-row"><label>Outbound (days)</label><input type="number" id="cfgOut" min="1" max="14" value="3"></div>
+        <div class="s-row"><label>Return (days)</label><input type="number" id="cfgRet" min="1" max="14" value="3"></div>
+        <div class="s-row"><label>Processing (days)</label><input type="number" id="cfgProc" min="1" max="30" value="7"></div>
+      </div>
+      <div class="divider"></div>
+      <div>
+        <div class="s-label">Kit status — today</div>
+        <div id="kitStatusList"></div>
+      </div>
+      <div class="divider"></div>
+      <div>
+        <div class="s-label">Unassigned <span class="badge-red" id="unassignedBadge">0</span></div>
+        <div id="unassignedList"></div>
+      </div>
+      <div class="divider"></div>
+      <div>
+        <div class="s-label">Manage</div>
+        <button class="btn btn-sm btn-block" id="btnSurgeons">Surgeons &amp; hospitals</button>
+        <button class="btn btn-sm btn-block" id="btnKits">Manage kits</button>
+        <button class="btn btn-sm btn-block" id="btnSignOut" style="margin-top:4px">Sign out</button>
+      </div>
+    </div>
+
+    <div class="content">
+      <div class="cal-hdr">
+        <div class="cal-nav">
+          <button id="prevMonth">&#8249;</button>
+          <span class="cal-month" id="monthLabel"></span>
+          <button id="nextMonth">&#8250;</button>
+        </div>
+        <button class="btn btn-sm" id="btnToday">Today</button>
+        <div class="cal-stats">
+          <div class="stat-card"><div class="stat-val" id="stTotal">0</div><div class="stat-lbl">surgeries</div></div>
+          <div class="stat-card"><div class="stat-val" id="stAssigned">0</div><div class="stat-lbl">assigned</div></div>
+          <div class="stat-card warn"><div class="stat-val" id="stUnassigned">0</div><div class="stat-lbl">unassigned</div></div>
+        </div>
+      </div>
+      <div class="legend">
+        <div class="leg"><div class="leg-box" style="background:#FFF3CD;border:1.5px solid #E6A817"></div>Surgery day</div>
+        <div class="leg"><div class="leg-box" style="background:#DCF0FF;border:1.5px dashed #2E90D4;opacity:.7"></div>In transit</div>
+        <div class="leg"><div class="leg-box" style="background:var(--c-purple-fill);border:1.5px dashed var(--c-purple-bd);opacity:.6"></div>Processing</div>
+        <div class="leg"><div class="leg-box" style="background:var(--c-red-fill);border:1.5px solid var(--c-red-bd)"></div>Unassigned</div>
+        <div class="leg"><div style="width:7px;height:7px;border-radius:50%;background:var(--c-amber-bd);margin-right:2px"></div>Custom transit</div>
+      </div>
+      <div class="tl-wrap" id="tlWrap"></div>
+      <div id="tlUnassigned" style="margin-top:8px"></div>
+    </div>
+  </div>
+</div>
+
+<div class="tooltip" id="tooltip" style="display:none"></div>
+
+<!-- SURGERY MODAL -->
+<div class="overlay" id="surgModal" style="display:none">
+  <div class="modal">
+    <div class="modal-hdr">
+      <div class="modal-title" id="surgModalTitle">Add surgery</div>
+      <button class="modal-x" id="surgModalX">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="conflict-warn" id="conflictWarn"></div>
+      <div class="f-field"><label class="f-lbl">Surgery date *</label><input type="date" class="f-input" id="fDate"></div>
+      <div class="f-field">
+        <label class="f-lbl">Surgeon *</label>
+        <select class="f-input" id="fSurgeon"><option value="">— select surgeon —</option></select>
+      </div>
+      <div class="f-field">
+        <label class="f-lbl">Hospital *</label>
+        <select class="f-input" id="fHospital"><option value="">— select surgeon first —</option></select>
+      </div>
+      <div class="f-field">
+        <label class="f-lbl">Assign kit</label>
+        <select class="f-input" id="fKit"><option value="">— assign later —</option></select>
+        <div class="f-hint" id="kitHint"></div>
+      </div>
+      <div class="transit-box">
+        <div class="transit-hdr">
+          <span class="transit-title">Transit &amp; processing days</span>
+          <button type="button" class="btn btn-sm" id="btnResetTransit">Reset to defaults</button>
+        </div>
+        <div class="transit-grid">
+          <div class="transit-field"><label>Outbound</label><input type="number" id="fOut" min="1" max="14"></div>
+          <div class="transit-field"><label>Return</label><input type="number" id="fRet" min="1" max="14"></div>
+          <div class="transit-field"><label>Processing</label><input type="number" id="fProc" min="1" max="30"></div>
+        </div>
+        <div class="transit-hint" id="transitHint"></div>
+      </div>
+      <div class="f-field"><label class="f-lbl">Notes</label><input type="text" class="f-input" id="fNotes" placeholder="Optional notes"></div>
+    </div>
+    <div class="modal-ftr">
+      <button class="btn btn-danger btn-sm" id="btnDelSurg" style="margin-right:auto;display:none">Delete</button>
+      <button class="btn" id="surgModalCancel">Cancel</button>
+      <button class="btn btn-primary" id="surgModalSave">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- SURGEONS MODAL -->
+<div class="overlay" id="surgeonsModal" style="display:none">
+  <div class="modal">
+    <div class="modal-hdr"><div class="modal-title">Surgeons &amp; hospitals</div><button class="modal-x" id="surgeonsX">&times;</button></div>
+    <div class="modal-body" style="max-height:440px">
+      <div id="surgeonsList"></div>
+      <div class="divider" style="margin:11px 0"></div>
+      <div style="font-size:13px;font-weight:700;margin-bottom:8px">Add new surgeon</div>
+      <div class="f-field"><label class="f-lbl">Surgeon name</label><input type="text" class="f-input" id="fNewSurgeon" placeholder="e.g. Mr. Davies"></div>
+      <div class="f-field"><label class="f-lbl">Hospitals (comma-separated)</label><input type="text" class="f-input" id="fNewHospitals" placeholder="e.g. City General, Royal Infirmary"></div>
+      <button class="btn btn-primary btn-sm" id="btnSaveSurgeon">Add surgeon</button>
+    </div>
+    <div class="modal-ftr"><button class="btn" id="surgeonsClose">Close</button></div>
+  </div>
+</div>
+
+<!-- KITS MODAL -->
+<div class="overlay" id="kitsModal" style="display:none">
+  <div class="modal">
+    <div class="modal-hdr"><div class="modal-title">Manage kits</div><button class="modal-x" id="kitsX">&times;</button></div>
+    <div class="modal-body">
+      <div id="kitsManageList"></div>
+      <div class="divider" style="margin:11px 0"></div>
+      <div class="f-field"><label class="f-lbl">New kit name</label><input type="text" class="f-input" id="fNewKit" placeholder="e.g. Set G"></div>
+      <button class="btn btn-primary btn-sm" id="btnSaveKit">Add kit</button>
+    </div>
+    <div class="modal-ftr"><button class="btn" id="kitsClose">Close</button></div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════
+// CONFIG
+// ═══════════════════════════════════════════════════
+const CLIENT_ID  = 'aec9c908-4730-4818-8eca-31ccad1f3343';
+const TENANT_ID  = '77fe9d03-6f38-4f72-a242-b6595d2ea69d';
+const SP_SITE    = 'https://axisspinetechcom.sharepoint.com/sites/RD647';
+const REDIRECT   = 'https://axisspinetechcom.sharepoint.com/sites/RD647/Shared%20Documents/General/03.%20Office%20Admin/surgical_kit_planner/surgical_kit_planner.html';
+const SCOPES     = ['https://graph.microsoft.com/Sites.ReadWrite.All'];
+const MONTHS     = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+const KIT_COLORS = ['#2E90D4','#27AE60','#E67E22','#9B59B6','#E24B4A','#1ABC9C','#F39C12','#3498DB'];
+
+// ═══════════════════════════════════════════════════
+// MSAL SETUP
+// ═══════════════════════════════════════════════════
+const msalConfig = {
+  auth: { clientId:CLIENT_ID, authority:`https://login.microsoftonline.com/${TENANT_ID}`, redirectUri:REDIRECT },
+  cache: { cacheLocation:'sessionStorage', storeAuthStateInCookie:true }
+};
+const msal = new msalBrowser.PublicClientApplication(msalConfig);
+
+let accessToken = null;
+let spSiteId    = null;
+
+async function getToken() {
+  const accounts = msal.getAllAccounts();
+  if (!accounts.length) return null;
+  try {
+    const r = await msal.acquireTokenSilent({ scopes:SCOPES, account:accounts[0] });
+    return r.accessToken;
+  } catch(e) {
+    try {
+      const r = await msal.acquireTokenPopup({ scopes:SCOPES });
+      return r.accessToken;
+    } catch(e2) { return null; }
+  }
+}
+
+async function graphGet(path) {
+  const tok = await getToken();
+  if (!tok) return null;
+  const r = await fetch(`https://graph.microsoft.com/v1.0${path}`, {
+    headers:{ Authorization:`Bearer ${tok}`, 'Content-Type':'application/json' }
+  });
+  if (!r.ok) return null;
+  return r.json();
+}
+
+async function graphPost(path, body, method='POST') {
+  const tok = await getToken();
+  if (!tok) return null;
+  const r = await fetch(`https://graph.microsoft.com/v1.0${path}`, {
+    method, headers:{ Authorization:`Bearer ${tok}`, 'Content-Type':'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!r.ok) { console.error('Graph error', r.status, await r.text()); return null; }
+  if (r.status === 204) return {};
+  return r.json();
+}
+
+async function getSiteId() {
+  if (spSiteId) return spSiteId;
+  const host = 'axisspinetechcom.sharepoint.com';
+  const path = '/sites/RD647';
+  const r = await graphGet(`/sites/${host}:${path}`);
+  if (r?.id) { spSiteId = r.id; return spSiteId; }
+  return null;
+}
+
+async function getListId(listName) {
+  const sid = await getSiteId();
+  if (!sid) return null;
+  const r = await graphGet(`/sites/${sid}/lists?$filter=displayName eq '${listName}'&$select=id`);
+  return r?.value?.[0]?.id || null;
+}
+
+// ═══════════════════════════════════════════════════
+// SP LIST OPERATIONS
+// ═══════════════════════════════════════════════════
+let listIds = {};
+
+async function ensureListIds() {
+  if (listIds.Surgeries) return;
+  const [s,k,sg] = await Promise.all([
+    getListId('Surgeries'), getListId('SurgicalKits'), getListId('Surgeons')
+  ]);
+  listIds = { Surgeries:s, SurgicalKits:k, Surgeons:sg };
+}
+
+async function spGetItems(listName, select='') {
+  const sid = await getSiteId();
+  const lid = listIds[listName];
+  if (!sid || !lid) return [];
+  const q = select ? `?$select=${select}&$top=500` : '?$top=500';
+  const r = await graphGet(`/sites/${sid}/lists/${lid}/items${q}&$expand=fields`);
+  return r?.value || [];
+}
+
+async function spCreateItem(listName, fields) {
+  const sid = await getSiteId();
+  const lid = listIds[listName];
+  if (!sid || !lid) return null;
+  return graphPost(`/sites/${sid}/lists/${lid}/items`, { fields });
+}
+
+async function spUpdateItem(listName, itemId, fields) {
+  const sid = await getSiteId();
+  const lid = listIds[listName];
+  if (!sid || !lid) return null;
+  return graphPost(`/sites/${sid}/lists/${lid}/items/${itemId}/fields`, fields, 'PATCH');
+}
+
+async function spDeleteItem(listName, itemId) {
+  const sid = await getSiteId();
+  const lid = listIds[listName];
+  if (!sid || !lid) return;
+  const tok = await getToken();
+  await fetch(`https://graph.microsoft.com/v1.0/sites/${sid}/lists/${lid}/items/${itemId}`,
+    { method:'DELETE', headers:{ Authorization:`Bearer ${tok}` }});
+}
+
+// ═══════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════
+let cfg = { outboundDays:3, returnDays:3, processingDays:7 };
+
+let data = { kits:[], surgeons:[], surgeries:[] };
+
+// Fallback demo data used only if SP lists are empty
+const DEMO = {
+  kits:[
+    {id:'k1',name:'Set A',color:'#2E90D4',active:true},
+    {id:'k2',name:'Set B',color:'#27AE60',active:true},
+    {id:'k3',name:'Set C',color:'#E67E22',active:true},
+    {id:'k4',name:'Set D',color:'#9B59B6',active:true},
+    {id:'k5',name:'Set E',color:'#E24B4A',active:true},
+    {id:'k6',name:'Set F',color:'#1ABC9C',active:true},
+  ],
+  surgeons:[
+    {id:'sg1',name:'Mr. Davies',hospitals:['City General','Northside Hospital']},
+    {id:'sg2',name:'Ms. Patel',hospitals:['Royal Infirmary','St. Thomas']},
+    {id:'sg3',name:'Mr. Chen',hospitals:['City General','St. Thomas']},
+  ],
+  surgeries:[]
+};
+
+let viewYear  = new Date().getFullYear();
+let viewMonth = new Date().getMonth();
+let editingId = null;
+
+// ═══════════════════════════════════════════════════
+// LOAD FROM SHAREPOINT
+// ═══════════════════════════════════════════════════
+async function loadFromSP() {
+  setStatus('spin', 'Loading data...');
+  await ensureListIds();
+
+  const [kItems, sItems, sgItems] = await Promise.all([
+    spGetItems('SurgicalKits'), spGetItems('Surgeries'), spGetItems('Surgeons')
+  ]);
+
+  if (kItems.length) {
+    data.kits = kItems.map(i => ({
+      id: 'k'+i.id, spId:i.id,
+      name:  i.fields.Title || '',
+      color: i.fields.Color || KIT_COLORS[0],
+      active: i.fields.Active !== false
+    }));
+  } else { data.kits = DEMO.kits; }
+
+  if (sgItems.length) {
+    data.surgeons = sgItems.map(i => {
+      let hs = [];
+      try { hs = JSON.parse(i.fields.Hospitals || '[]'); } catch(e) { hs = (i.fields.Hospitals||'').split('\n').filter(Boolean); }
+      return { id:'sg'+i.id, spId:i.id, name:i.fields.Title||'', hospitals:hs };
+    });
+  } else { data.surgeons = DEMO.surgeons; }
+
+  if (sItems.length) {
+    data.surgeries = sItems.map(i => ({
+      id: 's'+i.id, spId:i.id,
+      date:     (i.fields.SurgeryDate||'').slice(0,10),
+      surgeon:  i.fields.Surgeon  || '',
+      hospital: i.fields.Hospital || '',
+      kitId:    i.fields.KitId    || null,
+      notes:    i.fields.Notes    || '',
+      status:   i.fields.Status   || 'scheduled',
+      outboundDays:   i.fields.OutboundDays   != null ? +i.fields.OutboundDays   : null,
+      returnDays:     i.fields.ReturnDays     != null ? +i.fields.ReturnDays     : null,
+      processingDays: i.fields.ProcessingDays != null ? +i.fields.ProcessingDays : null,
+    }));
+  } else { data.surgeries = DEMO.surgeries; }
+
+  setStatus('ok', 'Synced with SharePoint');
+}
+
+// ═══════════════════════════════════════════════════
+// SAVE HELPERS
+// ═══════════════════════════════════════════════════
+function showSaving(on) {
+  document.getElementById('savingBadge').classList.toggle('show', on);
+}
+
+async function saveSurgery(s) {
+  showSaving(true);
+  const fields = {
+    Title:          `${s.surgeon} – ${s.hospital} – ${s.date}`,
+    SurgeryDate:    s.date,
+    Surgeon:        s.surgeon,
+    Hospital:       s.hospital,
+    KitId:          s.kitId || '',
+    Notes:          s.notes || '',
+    Status:         s.status || 'scheduled',
+    OutboundDays:   s.outboundDays   != null ? s.outboundDays   : null,
+    ReturnDays:     s.returnDays     != null ? s.returnDays     : null,
+    ProcessingDays: s.processingDays != null ? s.processingDays : null,
+  };
+  // Remove nulls — Graph API doesn't like null on number fields
+  Object.keys(fields).forEach(k => { if (fields[k] === null) delete fields[k]; });
+
+  if (s.spId) {
+    await spUpdateItem('Surgeries', s.spId, fields);
+  } else {
+    const r = await spCreateItem('Surgeries', fields);
+    if (r?.id) s.spId = r.id;
+  }
+  showSaving(false);
+}
+
+async function deleteSurgery(s) {
+  if (!s.spId) return;
+  showSaving(true);
+  await spDeleteItem('Surgeries', s.spId);
+  showSaving(false);
+}
+
+async function saveSurgeon(sg) {
+  showSaving(true);
+  const fields = { Title: sg.name, Hospitals: JSON.stringify(sg.hospitals) };
+  if (sg.spId) {
+    await spUpdateItem('Surgeons', sg.spId, fields);
+  } else {
+    const r = await spCreateItem('Surgeons', fields);
+    if (r?.id) sg.spId = r.id;
+  }
+  showSaving(false);
+}
+
+async function saveKit(k) {
+  showSaving(true);
+  const fields = { Title:k.name, Color:k.color, Active:k.active };
+  if (k.spId) {
+    await spUpdateItem('SurgicalKits', k.spId, fields);
+  } else {
+    const r = await spCreateItem('SurgicalKits', fields);
+    if (r?.id) k.spId = r.id;
+  }
+  showSaving(false);
+}
+
+// ═══════════════════════════════════════════════════
+// DATE / LOGIC HELPERS
+// ═══════════════════════════════════════════════════
+const addDays  = (ds,n) => { const d=new Date(ds+'T12:00:00'); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); };
+const today    = () => new Date().toISOString().slice(0,10);
+const fmtDate  = ds => new Date(ds+'T12:00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short'});
+const monthDates = (y,m) => { const a=[],n=new Date(y,m+1,0).getDate(); for(let d=1;d<=n;d++) a.push(`${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`); return a; };
+
+const sOut  = s => s.outboundDays   ?? cfg.outboundDays;
+const sRet  = s => s.returnDays     ?? cfg.returnDays;
+const sProc = s => s.processingDays ?? cfg.processingDays;
+const sIsCustom = s => s.outboundDays!==null || s.returnDays!==null || s.processingDays!==null;
+
+function hexFaint(hex,a) {
+  const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
+  return `rgba(${r},${g},${b},${a})`;
+}
+function hexDark(hex) {
+  return `rgb(${Math.max(0,parseInt(hex.slice(1,3),16)-65)},${Math.max(0,parseInt(hex.slice(3,5),16)-65)},${Math.max(0,parseInt(hex.slice(5,7),16)-65)})`;
+}
+
+function kitBusy(kitId, date, excludeId, outD, retD, procD) {
+  const out=outD??cfg.outboundDays, ret=retD??cfg.returnDays, proc=procD??cfg.processingDays;
+  const cs=addDays(date,-out), ce=addDays(addDays(date,ret),proc);
+  for (const s of data.surgeries) {
+    if (s.kitId!==kitId || s.id===excludeId) continue;
+    const ss=addDays(s.date,-sOut(s)), se=addDays(addDays(s.date,sRet(s)),sProc(s));
+    if (cs<=se && ce>=ss) return true;
+  }
+  return false;
+}
+
+function getKitSpans(kit) {
+  const spans=[];
+  for (const s of data.surgeries) {
+    if (s.kitId!==kit.id) continue;
+    const oS=addDays(s.date,-sOut(s)), rE=addDays(s.date,sRet(s)), pE=addDays(rE,sProc(s));
+    spans.push({type:'transit-out',start:oS,              end:addDays(s.date,-1),kit,surgery:s});
+    spans.push({type:'surgery',    start:s.date,          end:s.date,            kit,surgery:s});
+    spans.push({type:'transit-in', start:addDays(s.date,1),end:rE,              kit,surgery:s});
+    spans.push({type:'processing', start:addDays(rE,1),   end:pE,               kit,surgery:s});
+  }
+  return spans;
+}
+
+function getKitStatusToday(kit) {
+  const td=today();
+  for (const s of data.surgeries) {
+    if (s.kitId!==kit.id) continue;
+    const oS=addDays(s.date,-sOut(s)), rE=addDays(s.date,sRet(s)), pE=addDays(rE,sProc(s));
+    if (td===s.date)              return 'surgery';
+    if (td>=oS && td<s.date)      return 'transit';
+    if (td>s.date && td<=rE)      return 'transit';
+    if (td>rE && td<=pE)          return 'processing';
+  }
+  return 'available';
+}
+
+// ═══════════════════════════════════════════════════
+// RENDER
+// ═══════════════════════════════════════════════════
+function renderTimeline() {
+  const dates=monthDates(viewYear,viewMonth), td=today();
+  document.getElementById('monthLabel').textContent=`${MONTHS[viewMonth]} ${viewYear}`;
+  const pfx=`${viewYear}-${String(viewMonth+1).padStart(2,'0')}`;
+  const ms=data.surgeries.filter(s=>s.date.startsWith(pfx));
+  document.getElementById('stTotal').textContent=ms.length;
+  document.getElementById('stAssigned').textContent=ms.filter(s=>s.kitId).length;
+  document.getElementById('stUnassigned').textContent=ms.filter(s=>!s.kitId).length;
+
+  const dayLabels=dates.map(ds=>{
+    const dow=new Date(ds+'T12:00:00').getDay();
+    const cls=ds===td?'is-today':(dow===0||dow===6)?'is-wknd':'';
+    return `<div class="tl-day-lbl ${cls}">${'SMTWTFS'[dow]}<br><strong>${+ds.slice(8)}</strong></div>`;
+  }).join('');
+
+  const kitRows=data.kits.filter(k=>k.active).map(kit=>buildKitRow(kit,dates,td)).join('');
+  document.getElementById('tlWrap').innerHTML=
+    `<div class="tl-head"><div class="tl-kit-col">Kit</div><div class="tl-days-head">${dayLabels}</div></div>${kitRows}`;
+
+  const unassigned=data.surgeries.filter(s=>!s.kitId&&s.date.startsWith(pfx));
+  if (unassigned.length) {
+    const cells=dates.map(ds=>{const dow=new Date(ds+'T12:00:00').getDay();return`<div class="tl-cell${(dow===0||dow===6)?' is-wknd':''}${ds===td?' is-today':''}"></div>`;}).join('');
+    const uspans=unassigned.map(s=>{
+      const idx=dates.indexOf(s.date); if(idx<0)return'';
+      const l=(idx/dates.length*100).toFixed(2),w=(1/dates.length*100).toFixed(2);
+      const tip=encodeURIComponent(`Unassigned\n${s.surgeon}\n${s.hospital}\n${fmtDate(s.date)}`);
+      return `<div class="t-span span-surgery" style="left:${l}%;width:${w}%;background:var(--c-red-fill);border-color:var(--c-red-bd)" data-tip="${tip}" data-sid="${s.id}"><span class="t-span-lbl" style="color:var(--c-red-txt)">${s.hospital}</span></div>`;
+    }).join('');
+    document.getElementById('tlUnassigned').innerHTML=
+      `<div class="tl-wrap"><div class="tl-row"><div class="tl-kit-lbl" style="background:var(--c-red-fill)"><div class="tl-kit-dot" style="background:var(--c-red-bd)"></div><div class="tl-kit-name" style="color:var(--c-red-txt);font-size:10px">No kit</div></div><div class="tl-cells">${cells}<div class="span-layer">${uspans}</div></div></div></div>`;
+  } else { document.getElementById('tlUnassigned').innerHTML=''; }
+
+  renderSidebar();
+  bindSpanEvents();
+}
+
+function buildKitRow(kit,dates,td) {
+  const cells=dates.map(ds=>{const dow=new Date(ds+'T12:00:00').getDay();return`<div class="tl-cell${(dow===0||dow===6)?' is-wknd':''}${ds===td?' is-today':''}"></div>`;}).join('');
+  const spans=getKitSpans(kit).map(sp=>{
+    let si=dates.indexOf(sp.start),ei=dates.indexOf(sp.end);
+    if(si<0&&ei<0)return'';
+    si=si<0?0:si; ei=ei<0?dates.length-1:ei; if(si>ei)return'';
+    const l=(si/dates.length*100).toFixed(2),w=((ei-si+1)/dates.length*100).toFixed(2);
+    const c=kit.color,custom=sIsCustom(sp.surgery);
+    let cls='',style='',lblStyle='';
+    if(sp.type==='surgery'){cls='span-surgery';style=`background:${hexFaint(c,.28)};border-color:${c};`;lblStyle=`color:${hexDark(c)}`;}
+    else if(sp.type==='transit-out'||sp.type==='transit-in'){cls='span-transit';style=`background:${hexFaint(c,.14)};border-color:${c};`;lblStyle=`color:${hexDark(c)}`;}
+    else{cls='span-proc';}
+    const label=sp.type==='surgery'?`${kit.name} — ${sp.surgery.hospital}`:sp.type==='transit-out'?`${kit.name} out`:sp.type==='transit-in'?`${kit.name} ret`:`${kit.name} proc`;
+    const s=sp.surgery;
+    const tipLines=sp.type==='surgery'
+      ?`${kit.name}\n${s.surgeon}\n${s.hospital}\n${fmtDate(s.date)}\nOut:${sOut(s)}d Ret:${sRet(s)}d Proc:${sProc(s)}d${custom?' ✎custom':''}`
+      :sp.type==='transit-out'?`${kit.name} outbound\n${fmtDate(sp.start)} – ${fmtDate(sp.end)}`
+      :sp.type==='transit-in'?`${kit.name} return\n${fmtDate(sp.start)} – ${fmtDate(sp.end)}`
+      :`${kit.name} processing\n${fmtDate(sp.start)} – ${fmtDate(sp.end)}`;
+    const sidAttr=sp.type==='surgery'?`data-sid="${s.id}"`:'';
+    const cdot=(custom&&sp.type==='surgery')?'<div class="custom-dot"></div>':'';
+    return `<div class="t-span ${cls}" style="left:${l}%;width:${w}%;${style}" data-tip="${encodeURIComponent(tipLines)}" ${sidAttr}>${cdot}<span class="t-span-lbl" style="${lblStyle}">${label}</span></div>`;
+  }).join('');
+  return `<div class="tl-row"><div class="tl-kit-lbl"><div class="tl-kit-dot" style="background:${kit.color}"></div><div class="tl-kit-name">${kit.name}</div></div><div class="tl-cells">${cells}<div class="span-layer">${spans}</div></div></div>`;
+}
+
+function renderSidebar() {
+  document.getElementById('kitStatusList').innerHTML=data.kits.filter(k=>k.active).map(k=>{
+    const s=getKitStatusToday(k);
+    const p=s==='available'?'pill-available':s==='transit'?'pill-transit':s==='surgery'?'pill-surgery':'pill-processing';
+    return `<div class="kit-chip"><div class="kit-dot" style="background:${k.color}"></div><span class="kit-name">${k.name}</span><span class="pill ${p}">${s}</span></div>`;
+  }).join('');
+  const ua=data.surgeries.filter(s=>!s.kitId).sort((a,b)=>a.date.localeCompare(b.date));
+  document.getElementById('unassignedBadge').textContent=ua.length;
+  document.getElementById('unassignedList').innerHTML=ua.slice(0,6).map(s=>
+    `<div class="unassigned-card" data-sid="${s.id}"><div class="ua-date">${fmtDate(s.date)}</div><div class="ua-info">${s.surgeon} · ${s.hospital}</div></div>`
+  ).join('')||'<div style="font-size:12px;color:var(--c-hint);padding:3px 0">All assigned</div>';
+  document.querySelectorAll('.unassigned-card').forEach(el=>el.addEventListener('click',()=>openModal(el.dataset.sid)));
+}
+
+function bindSpanEvents() {
+  const tip=document.getElementById('tooltip');
+  document.querySelectorAll('.t-span').forEach(el=>{
+    el.addEventListener('mouseenter',()=>{const t=decodeURIComponent(el.dataset.tip||'');if(!t)return;tip.textContent=t;tip.style.display='block';});
+    el.addEventListener('mousemove',e=>{tip.style.left=(e.clientX+13)+'px';tip.style.top=(e.clientY-8)+'px';});
+    el.addEventListener('mouseleave',()=>tip.style.display='none');
+    if(el.dataset.sid) el.addEventListener('click',()=>{tip.style.display='none';openModal(el.dataset.sid);});
+  });
+}
+
+// ═══════════════════════════════════════════════════
+// SURGERY MODAL
+// ═══════════════════════════════════════════════════
+function openModal(surgId) {
+  editingId=surgId||null;
+  const s=surgId?data.surgeries.find(x=>x.id===surgId):null;
+  document.getElementById('surgModalTitle').textContent=s?'Edit surgery':'Add surgery';
+  document.getElementById('btnDelSurg').style.display=s?'inline-flex':'none';
+  document.getElementById('conflictWarn').style.display='none';
+  document.getElementById('fDate').value=s?.date||'';
+  document.getElementById('fNotes').value=s?.notes||'';
+  document.getElementById('fOut').value=s?sOut(s):cfg.outboundDays;
+  document.getElementById('fRet').value=s?sRet(s):cfg.returnDays;
+  document.getElementById('fProc').value=s?sProc(s):cfg.processingDays;
+  refreshTransitHint();
+  const surgSel=document.getElementById('fSurgeon');
+  surgSel.innerHTML='<option value="">— select surgeon —</option>'+data.surgeons.map(sg=>`<option value="${sg.id}"${s&&s.surgeon===sg.name?' selected':''}>${sg.name}</option>`).join('');
+  fillHospitals(s?.surgeon||null,s?.hospital||null);
+  fillKits(s?.date||null,s?.kitId||null,surgId,s?sOut(s):null,s?sRet(s):null,s?sProc(s):null);
+  document.getElementById('surgModal').style.display='flex';
+}
+
+function fillHospitals(surgName,selHosp) {
+  const el=document.getElementById('fHospital');
+  if(!surgName){el.innerHTML='<option value="">— select surgeon first —</option>';return;}
+  const sg=data.surgeons.find(x=>x.name===surgName);
+  el.innerHTML='<option value="">— select hospital —</option>'+(sg?.hospitals||[]).map(h=>`<option value="${h}"${h===selHosp?' selected':''}>${h}</option>`).join('');
+}
+
+function fillKits(date,selKitId,excludeId,outD,retD,procD) {
+  const sel=document.getElementById('fKit'),hint=document.getElementById('kitHint');
+  sel.innerHTML='<option value="">— assign later —</option>';
+  if(!date){hint.textContent='Select a date to see kit availability';return;}
+  let avail=0;
+  data.kits.filter(k=>k.active).forEach(k=>{
+    const busy=kitBusy(k.id,date,excludeId,outD,retD,procD),isSel=k.id===selKitId;
+    const opt=document.createElement('option');
+    opt.value=k.id; opt.textContent=k.name+(busy?' (busy)':''); opt.disabled=busy&&!isSel;
+    if(isSel)opt.selected=true; if(!busy)avail++; sel.appendChild(opt);
+  });
+  hint.textContent=`${avail} of ${data.kits.filter(k=>k.active).length} kits available`;
+}
+
+function refreshTransitHint() {
+  const out=+document.getElementById('fOut').value||cfg.outboundDays;
+  const ret=+document.getElementById('fRet').value||cfg.returnDays;
+  const proc=+document.getElementById('fProc').value||cfg.processingDays;
+  const isDef=out===cfg.outboundDays&&ret===cfg.returnDays&&proc===cfg.processingDays;
+  const el=document.getElementById('transitHint');
+  el.textContent=isDef?`Using global defaults (${cfg.outboundDays} / ${cfg.returnDays} / ${cfg.processingDays} days)`:'Custom for this surgery — overrides global defaults';
+  el.className='transit-hint'+(isDef?'':' is-custom');
+}
+
+function refreshKitsFromModal() {
+  const date=document.getElementById('fDate').value;
+  const out=+document.getElementById('fOut').value||cfg.outboundDays;
+  const ret=+document.getElementById('fRet').value||cfg.returnDays;
+  const proc=+document.getElementById('fProc').value||cfg.processingDays;
+  fillKits(date||null,document.getElementById('fKit').value||null,editingId,out,ret,proc);
+}
+
+// ═══════════════════════════════════════════════════
+// STATUS
+// ═══════════════════════════════════════════════════
+function setStatus(state,txt) {
+  const dot=document.getElementById('statusDot'),t=document.getElementById('statusTxt');
+  dot.className='status-dot'+(state==='ok'?' ok':state==='err'?' err':state==='spin'?' spin':'');
+  t.textContent=txt||'';
+}
+
+// ═══════════════════════════════════════════════════
+// MANAGE SURGEONS
+// ═══════════════════════════════════════════════════
+function renderSurgeonsList() {
+  document.getElementById('surgeonsList').innerHTML=data.surgeons.map(sg=>`
+    <div style="padding:7px 0;border-bottom:1px solid var(--c-border);display:flex;align-items:flex-start;gap:8px">
+      <div style="flex:1"><div style="font-size:13px;font-weight:700">${sg.name}</div>
+      <div style="font-size:12px;color:var(--c-muted);margin-top:2px">${sg.hospitals.join(', ')||'No hospitals'}</div></div>
+      <button class="btn btn-sm btn-danger" data-del-sg="${sg.id}">Remove</button>
+    </div>`).join('')||'<div style="font-size:12px;color:var(--c-hint);padding:5px 0">No surgeons yet.</div>';
+  document.querySelectorAll('[data-del-sg]').forEach(btn=>btn.addEventListener('click',async()=>{
+    if(!confirm('Remove this surgeon?'))return;
+    const sg=data.surgeons.find(x=>x.id===btn.dataset.delSg);
+    if(sg?.spId){showSaving(true);await spDeleteItem('Surgeons',sg.spId);showSaving(false);}
+    data.surgeons=data.surgeons.filter(x=>x.id!==btn.dataset.delSg);
+    renderSurgeonsList();renderTimeline();
+  }));
+}
+
+function renderKitsList() {
+  document.getElementById('kitsManageList').innerHTML=data.kits.map(k=>`
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--c-border)">
+      <div style="width:12px;height:12px;border-radius:2px;background:${k.color};flex-shrink:0"></div>
+      <span style="font-size:13px;flex:1">${k.name}</span>
+      <button class="btn btn-sm" data-toggle="${k.id}">${k.active?'Deactivate':'Activate'}</button>
+    </div>`).join('');
+  document.querySelectorAll('[data-toggle]').forEach(btn=>btn.addEventListener('click',async()=>{
+    const k=data.kits.find(x=>x.id===btn.dataset.toggle);
+    if(k){k.active=!k.active;await saveKit(k);renderKitsList();renderTimeline();}
+  }));
+}
+
+// ═══════════════════════════════════════════════════
+// WIRE EVENTS
+// ═══════════════════════════════════════════════════
+function wireEvents() {
+  document.getElementById('prevMonth').addEventListener('click',()=>{if(--viewMonth<0){viewMonth=11;viewYear--;}renderTimeline();});
+  document.getElementById('nextMonth').addEventListener('click',()=>{if(++viewMonth>11){viewMonth=0;viewYear++;}renderTimeline();});
+  document.getElementById('btnToday').addEventListener('click',()=>{const td=today();viewYear=+td.slice(0,4);viewMonth=+td.slice(5,7)-1;renderTimeline();});
+  ['cfgOut','cfgRet','cfgProc'].forEach(id=>document.getElementById(id).addEventListener('change',e=>{
+    const v=Math.max(1,+e.target.value||1);
+    if(id==='cfgOut')cfg.outboundDays=v; if(id==='cfgRet')cfg.returnDays=v; if(id==='cfgProc')cfg.processingDays=v;
+    try{localStorage.setItem('skp_cfg',JSON.stringify(cfg));}catch(e){}
+    renderTimeline();
+  }));
+  document.getElementById('btnAdd').addEventListener('click',()=>openModal(null));
+  document.getElementById('fSurgeon').addEventListener('change',e=>{const sg=data.surgeons.find(x=>x.id===e.target.value);fillHospitals(sg?.name||null,null);refreshKitsFromModal();});
+  document.getElementById('fDate').addEventListener('change',()=>refreshKitsFromModal());
+  ['fOut','fRet','fProc'].forEach(id=>document.getElementById(id).addEventListener('input',()=>{refreshTransitHint();refreshKitsFromModal();}));
+  document.getElementById('btnResetTransit').addEventListener('click',()=>{
+    document.getElementById('fOut').value=cfg.outboundDays;
+    document.getElementById('fRet').value=cfg.returnDays;
+    document.getElementById('fProc').value=cfg.processingDays;
+    refreshTransitHint();refreshKitsFromModal();
+  });
+  ['surgModalX','surgModalCancel'].forEach(id=>document.getElementById(id).addEventListener('click',()=>{document.getElementById('surgModal').style.display='none';}));
+
+  document.getElementById('surgModalSave').addEventListener('click',async()=>{
+    const date=document.getElementById('fDate').value;
+    const surgeonId=document.getElementById('fSurgeon').value;
+    const hospital=document.getElementById('fHospital').value;
+    const kitId=document.getElementById('fKit').value||null;
+    const notes=document.getElementById('fNotes').value;
+    const outD=+document.getElementById('fOut').value||cfg.outboundDays;
+    const retD=+document.getElementById('fRet').value||cfg.returnDays;
+    const procD=+document.getElementById('fProc').value||cfg.processingDays;
+    const outboundDays=outD===cfg.outboundDays?null:outD;
+    const returnDays=retD===cfg.returnDays?null:retD;
+    const processingDays=procD===cfg.processingDays?null:procD;
+    if(!date||!surgeonId||!hospital){alert('Date, surgeon and hospital are required.');return;}
+    const surgeon=data.surgeons.find(s=>s.id===surgeonId)?.name||'';
+    if(kitId&&kitBusy(kitId,date,editingId,outD,retD,procD)){
+      const cw=document.getElementById('conflictWarn');
+      cw.textContent='This kit has a scheduling conflict with these transit times. Adjust dates or pick a different kit.';
+      cw.style.display='block';return;
+    }
+    let s;
+    if(editingId){
+      s=data.surgeries.find(x=>x.id===editingId);
+      Object.assign(s,{date,surgeon,hospital,kitId,notes,outboundDays,returnDays,processingDays});
+    } else {
+      s={id:'s'+Date.now(),date,surgeon,hospital,kitId,notes,status:'scheduled',outboundDays,returnDays,processingDays};
+      data.surgeries.push(s);
+    }
+    document.getElementById('surgModal').style.display='none';
+    const d=new Date(date+'T12:00:00');viewYear=d.getFullYear();viewMonth=d.getMonth();
+    renderTimeline();
+    await saveSurgery(s);
+  });
+
+  document.getElementById('btnDelSurg').addEventListener('click',async()=>{
+    if(!editingId||!confirm('Delete this surgery?'))return;
+    const s=data.surgeries.find(x=>x.id===editingId);
+    document.getElementById('surgModal').style.display='none';
+    data.surgeries=data.surgeries.filter(x=>x.id!==editingId);
+    renderTimeline();
+    await deleteSurgery(s);
+  });
+
+  document.getElementById('btnSurgeons').addEventListener('click',()=>{renderSurgeonsList();document.getElementById('surgeonsModal').style.display='flex';});
+  document.getElementById('surgeonsX').addEventListener('click',()=>document.getElementById('surgeonsModal').style.display='none');
+  document.getElementById('surgeonsClose').addEventListener('click',()=>document.getElementById('surgeonsModal').style.display='none');
+  document.getElementById('btnSaveSurgeon').addEventListener('click',async()=>{
+    const name=document.getElementById('fNewSurgeon').value.trim();
+    const hosps=document.getElementById('fNewHospitals').value.trim();
+    if(!name){alert('Surgeon name required.');return;}
+    const sg={id:'sg'+Date.now(),name,hospitals:hosps?hosps.split(',').map(h=>h.trim()).filter(Boolean):[]};
+    data.surgeons.push(sg);
+    document.getElementById('fNewSurgeon').value='';document.getElementById('fNewHospitals').value='';
+    renderSurgeonsList();renderTimeline();
+    await saveSurgeon(sg);
+  });
+
+  document.getElementById('btnKits').addEventListener('click',()=>{renderKitsList();document.getElementById('kitsModal').style.display='flex';});
+  document.getElementById('kitsX').addEventListener('click',()=>document.getElementById('kitsModal').style.display='none');
+  document.getElementById('kitsClose').addEventListener('click',()=>document.getElementById('kitsModal').style.display='none');
+  document.getElementById('btnSaveKit').addEventListener('click',async()=>{
+    const name=document.getElementById('fNewKit').value.trim();
+    if(!name){alert('Kit name required.');return;}
+    const k={id:'k'+Date.now(),name,color:KIT_COLORS[data.kits.length%KIT_COLORS.length],active:true};
+    data.kits.push(k);
+    document.getElementById('fNewKit').value='';
+    renderKitsList();renderTimeline();
+    await saveKit(k);
+  });
+
+  document.getElementById('btnSignOut').addEventListener('click',async()=>{
+    await msal.logoutPopup();
+    document.getElementById('mainApp').style.display='none';
+    document.getElementById('authScreen').style.display='flex';
+  });
+
+  document.getElementById('btnMenu').addEventListener('click',()=>{
+    document.getElementById('sidebar').classList.toggle('open');
+  });
+
+  ['surgModal','surgeonsModal','kitsModal'].forEach(id=>
+    document.getElementById(id).addEventListener('click',e=>{if(e.target.id===id)e.target.style.display='none';})
+  );
+}
+
+// ═══════════════════════════════════════════════════
+// BOOT
+// ═══════════════════════════════════════════════════
+async function boot() {
+  await msal.initialize();
+
+  // Handle redirect response (MSAL redirect flow)
+  try { await msal.handleRedirectPromise(); } catch(e){}
+
+  const accounts=msal.getAllAccounts();
+
+  if (accounts.length > 0) {
+    // Already signed in
+    const acc=accounts[0];
+    document.getElementById('userDisplay').textContent=acc.name||acc.username;
+    document.getElementById('authScreen').style.display='none';
+    document.getElementById('mainApp').style.display='grid';
+    wireEvents();
+    // Restore cfg
+    try{const c=localStorage.getItem('skp_cfg');if(c){Object.assign(cfg,JSON.parse(c));document.getElementById('cfgOut').value=cfg.outboundDays;document.getElementById('cfgRet').value=cfg.returnDays;document.getElementById('cfgProc').value=cfg.processingDays;}}catch(e){}
+    await loadFromSP();
+    renderTimeline();
+  } else {
+    // Show sign-in screen
+    document.getElementById('authScreen').style.display='flex';
+    document.getElementById('btnSignIn').addEventListener('click',async()=>{
+      try {
+        const r=await msal.loginPopup({scopes:SCOPES});
+        document.getElementById('userDisplay').textContent=r.account.name||r.account.username;
+        document.getElementById('authScreen').style.display='none';
+        document.getElementById('mainApp').style.display='grid';
+        wireEvents();
+        try{const c=localStorage.getItem('skp_cfg');if(c){Object.assign(cfg,JSON.parse(c));document.getElementById('cfgOut').value=cfg.outboundDays;document.getElementById('cfgRet').value=cfg.returnDays;document.getElementById('cfgProc').value=cfg.processingDays;}}catch(e){}
+        await loadFromSP();
+        renderTimeline();
+      } catch(e) {
+        const err=document.getElementById('authErr');
+        err.textContent='Sign-in failed: '+e.message;
+        err.style.display='block';
+      }
+    });
+  }
+}
+
+boot();
+</script>
+</body>
+</html>
