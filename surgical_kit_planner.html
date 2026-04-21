@@ -110,6 +110,11 @@ body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; backg
 .btn-danger { color:var(--c-red-txt); border-color:var(--c-red-bd); }
 .btn-danger:hover { background:var(--c-red-fill); }
 .btn-block { width:100%; margin-bottom:5px; }
+.view-toggle { display:flex; gap:2px; }
+.view-btn { border-radius:0; border-right-width:0; }
+.view-toggle .view-btn:first-child { border-radius:var(--radius) 0 0 var(--radius); }
+.view-toggle .view-btn:last-child  { border-radius:0 var(--radius) var(--radius) 0; border-right-width:1px; }
+.view-btn.active { background:#2E90D4; color:#fff; border-color:#2E90D4; }
 
 /* ── Calendar header ── */
 .cal-hdr { display:flex; align-items:center; gap:9px; margin-bottom:12px; flex-wrap:wrap; }
@@ -234,6 +239,7 @@ body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; backg
     <span class="status-txt" id="statusTxt"></span>
     <span class="saving-badge" id="savingBadge">Saving...</span>
     <span id="userDisplay" style="font-size:11px;color:var(--c-muted)"></span>
+    <button class="btn btn-sm btn-icon" id="btnRefresh" title="Refresh data">↻</button>
     <button class="btn btn-sm btn-icon" id="btnSettings" title="Settings">⚙</button>
     <button class="btn btn-sm btn-primary" id="btnAdd">+ Surgery</button>
   </div>
@@ -266,8 +272,13 @@ body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; backg
           <button id="nextMonth">&#8250;</button>
         </div>
         <button class="btn btn-sm" id="btnToday">Today</button>
+        <div class="view-toggle">
+          <button class="btn btn-sm view-btn" data-days="14">2 wk</button>
+          <button class="btn btn-sm view-btn active" data-days="30">30d</button>
+          <button class="btn btn-sm view-btn" data-days="60">60d</button>
+        </div>
         <div class="cal-stats">
-          <div class="stat-card"><div class="stat-val" id="stTotal">0</div><div class="stat-lbl">surgeries</div></div>
+          <div class="stat-card"><div class="stat-val" id="stTotal">0</div><div class="stat-lbl">in view</div></div>
           <div class="stat-card"><div class="stat-val" id="stAssigned">0</div><div class="stat-lbl">assigned</div></div>
           <div class="stat-card warn"><div class="stat-val" id="stUnassigned">0</div><div class="stat-lbl">unassigned</div></div>
         </div>
@@ -581,8 +592,8 @@ const DEMO = {
   surgeries:[]
 };
 
-let viewYear  = new Date().getFullYear();
-let viewMonth = new Date().getMonth();
+let viewStart = new Date().toISOString().slice(0,10);  // rolling window start date
+let viewDays  = 30;                                     // days to show (14 / 30 / 60)
 let editingId = null;
 
 // ═══════════════════════════════════════════════════
@@ -626,7 +637,9 @@ async function saveKit(k)      { autoSave(); }
 const addDays  = (ds,n) => { const d=new Date(ds+'T12:00:00'); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); };
 const today    = () => new Date().toISOString().slice(0,10);
 const fmtDate  = ds => new Date(ds+'T12:00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short'});
-const monthDates = (y,m) => { const a=[],n=new Date(y,m+1,0).getDate(); for(let d=1;d<=n;d++) a.push(`${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`); return a; };
+const monthDates   = (y,m) => { const a=[],n=new Date(y,m+1,0).getDate(); for(let d=1;d<=n;d++) a.push(`${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`); return a; };
+const windowDates  = (start,n) => { const a=[]; for(let i=0;i<n;i++) a.push(addDays(start,i)); return a; };
+const fmtDateShort = ds => new Date(ds+'T12:00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'2-digit'});
 
 const sOut  = s => s.outboundDays   ?? cfg.outboundDays;
 const sRet  = s => s.returnDays     ?? cfg.returnDays;
@@ -683,10 +696,12 @@ function getKitStatusToday(kit) {
 // RENDER
 // ═══════════════════════════════════════════════════
 function renderTimeline() {
-  const dates=monthDates(viewYear,viewMonth), td=today();
-  document.getElementById('monthLabel').textContent=`${MONTHS[viewMonth]} ${viewYear}`;
-  const pfx=`${viewYear}-${String(viewMonth+1).padStart(2,'0')}`;
-  const ms=data.surgeries.filter(s=>s.date.startsWith(pfx));
+  const dates=windowDates(viewStart,viewDays), td=today();
+  const viewEnd=dates[dates.length-1];
+  document.getElementById('monthLabel').textContent=`${fmtDateShort(viewStart)} – ${fmtDateShort(viewEnd)}`;
+  // update active window-size button
+  document.querySelectorAll('.view-btn').forEach(b=>b.classList.toggle('active',+b.dataset.days===viewDays));
+  const ms=data.surgeries.filter(s=>s.date>=viewStart&&s.date<=viewEnd);
   document.getElementById('stTotal').textContent=ms.length;
   document.getElementById('stAssigned').textContent=ms.filter(s=>s.kitId).length;
   document.getElementById('stUnassigned').textContent=ms.filter(s=>!s.kitId).length;
@@ -1008,15 +1023,44 @@ function wireConsignmentPanels() {
 // WIRE EVENTS
 // ═══════════════════════════════════════════════════
 function wireEvents() {
-  document.getElementById('prevMonth').addEventListener('click',()=>{if(--viewMonth<0){viewMonth=11;viewYear--;}renderTimeline();});
-  document.getElementById('nextMonth').addEventListener('click',()=>{if(++viewMonth>11){viewMonth=0;viewYear++;}renderTimeline();});
-  document.getElementById('btnToday').addEventListener('click',()=>{const td=today();viewYear=+td.slice(0,4);viewMonth=+td.slice(5,7)-1;renderTimeline();});
+  document.getElementById('prevMonth').addEventListener('click',()=>{viewStart=addDays(viewStart,-viewDays);renderTimeline();});
+  document.getElementById('nextMonth').addEventListener('click',()=>{viewStart=addDays(viewStart,viewDays);renderTimeline();});
+  document.getElementById('btnToday').addEventListener('click',()=>{viewStart=today();renderTimeline();});
+  document.querySelectorAll('.view-btn').forEach(b=>b.addEventListener('click',()=>{viewDays=+b.dataset.days;renderTimeline();}));
+  document.getElementById('btnRefresh').addEventListener('click',async()=>{
+    setStatus('spin','Refreshing...');
+    lastKnownModified=null; // force reload regardless of cached timestamp
+    const saved=await loadDataFile();
+    if(saved&&Object.keys(saved).length>0){
+      if(saved.kits?.length)     data.kits         =saved.kits;
+      if(saved.surgeons?.length) data.surgeons     =saved.surgeons;
+      if(saved.surgeries)        data.surgeries    =saved.surgeries;
+      if(saved.consignments)     data.consignments =saved.consignments;
+      renderTimeline();
+      setStatus('ok','Refreshed ✓');
+    } else if(saved!==null){
+      setStatus('ok','Up to date');
+    }
+  });
   ['cfgOut','cfgRet','cfgProc'].forEach(id=>document.getElementById(id).addEventListener('change',e=>{
     const v=Math.max(1,+e.target.value||1);
     if(id==='cfgOut')cfg.outboundDays=v; if(id==='cfgRet')cfg.returnDays=v; if(id==='cfgProc')cfg.processingDays=v;
     try{localStorage.setItem('skp_cfg',JSON.stringify(cfg));}catch(e){}
     renderTimeline();
   }));
+  document.getElementById('btnRefresh').addEventListener('click',async()=>{
+    lastKnownModified=null;  // force reload regardless of change detection
+    setStatus('spin','Refreshing...');
+    const saved=await loadDataFile();
+    if(saved&&Object.keys(saved).length>0){
+      if(saved.kits?.length)     data.kits         =saved.kits;
+      if(saved.surgeons?.length) data.surgeons     =saved.surgeons;
+      if(saved.surgeries)        data.surgeries    =saved.surgeries;
+      if(saved.consignments)     data.consignments =saved.consignments;
+      renderTimeline();
+      setStatus('ok','Refreshed ✓');
+    }
+  });
   document.getElementById('btnSettings').addEventListener('click',()=>document.getElementById('settingsModal').style.display='flex');
   document.getElementById('settingsX').addEventListener('click',()=>document.getElementById('settingsModal').style.display='none');
   document.getElementById('settingsClose').addEventListener('click',()=>document.getElementById('settingsModal').style.display='none');
@@ -1060,7 +1104,8 @@ function wireEvents() {
       data.surgeries.push(s);
     }
     document.getElementById('surgModal').style.display='none';
-    const d=new Date(date+'T12:00:00');viewYear=d.getFullYear();viewMonth=d.getMonth();
+    // If surgery date is outside the current window, scroll to show it
+    if(date<viewStart||date>addDays(viewStart,viewDays-1)) viewStart=addDays(date,-3);
     renderTimeline();
     await saveSurgery(s);
   });
