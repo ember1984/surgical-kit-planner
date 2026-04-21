@@ -382,7 +382,7 @@ const msalConfig = {
   auth: { clientId:CLIENT_ID, authority:`https://login.microsoftonline.com/${TENANT_ID}`, redirectUri:REDIRECT },
   cache: { cacheLocation:'sessionStorage', storeAuthStateInCookie:true }
 };
-const msal = new msalBrowser.PublicClientApplication(msalConfig);
+const msal = new window.msal.PublicClientApplication(msalConfig);
 
 let accessToken = null;
 let spSiteId    = null;
