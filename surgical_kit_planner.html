@@ -85,10 +85,12 @@ body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; backg
 .kit-dot { width:10px; height:10px; border-radius:2px; flex-shrink:0; }
 .kit-name { font-weight:600; flex:1; }
 .pill { font-size:10px; padding:2px 7px; border-radius:10px; font-weight:700; }
-.pill-available  { background:var(--c-green-fill);  color:var(--c-green-txt); }
-.pill-transit    { background:var(--c-blue-fill);   color:var(--c-blue-txt); }
-.pill-surgery    { background:var(--c-amber-fill);  color:var(--c-amber-txt); }
-.pill-processing { background:var(--c-purple-fill); color:var(--c-purple-txt); }
+.pill-available   { background:var(--c-green-fill);  color:var(--c-green-txt); }
+.pill-transit     { background:var(--c-blue-fill);   color:var(--c-blue-txt); }
+.pill-surgery     { background:var(--c-amber-fill);  color:var(--c-amber-txt); }
+.pill-processing  { background:var(--c-purple-fill); color:var(--c-purple-txt); }
+.pill-consigned   { background:#E0F0FF; color:#0A4A7A; }
+@media (prefers-color-scheme:dark){ .pill-consigned { background:#0A2A40; color:#8FD0FF; } }
 .s-row { display:flex; align-items:center; justify-content:space-between; font-size:12px; margin-bottom:6px; }
 .s-row label { color:var(--c-muted); }
 .s-row input[type=number] { width:46px; padding:3px 5px; border:1px solid var(--c-border-mid); border-radius:var(--radius); font-size:12px; background:var(--c-bg); color:var(--c-text); text-align:center; }
@@ -397,7 +399,7 @@ const DATA_FILE    = 'surgical_kit_data.json';
 const REDIRECT     = 'https://ember1984.github.io/surgical-kit-planner/surgical_kit_planner.html';
 const SCOPES       = ['https://graph.microsoft.com/Sites.Selected', 'https://graph.microsoft.com/User.Read'];
 const MONTHS     = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-const KIT_COLORS = ['#2E90D4','#27AE60','#E67E22','#9B59B6','#E24B4A','#1ABC9C','#F39C12','#3498DB'];
+const KIT_COLORS = ['#2563EB','#16A34A','#DC2626','#9333EA','#EA580C','#0891B2','#DB2777','#854D0E'];
 
 // ═══════════════════════════════════════════════════
 // MSAL SETUP
@@ -408,8 +410,10 @@ const msalConfig = {
 };
 const msal = new window.msal.PublicClientApplication(msalConfig);
 
-let driveId   = null;
-let saveTimer = null;
+let driveId          = null;
+let saveTimer        = null;
+let pollTimer        = null;
+let lastKnownModified = null;
 
 async function getToken() {
   const accounts = msal.getAllAccounts();
@@ -473,6 +477,7 @@ async function loadDataFile() {
       setStatus('err', `Load failed: ${msg}`);
       return null;
     }
+    lastKnownModified = r.headers.get('Last-Modified') || r.headers.get('ETag') || null;
     return r.json();
   } catch(e) {
     setStatus('err', `Load error: ${e.message}`);
@@ -498,6 +503,7 @@ async function saveDataFile() {
       setStatus('err', `Save failed: ${msg}`);
       return;
     }
+    try { const meta=await r.json(); lastKnownModified=meta.lastModifiedDateTime||meta.eTag||null; } catch(x){}
     setStatus('ok', 'Synced ✓');
   } catch(e) {
     showSaving(false);
@@ -508,6 +514,46 @@ async function saveDataFile() {
 function autoSave() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(saveDataFile, 1000);
+}
+
+async function checkForUpdates() {
+  if (!driveId || saveTimer) return;  // skip if save pending
+  const tok = await getToken();
+  if (!tok) return;
+  try {
+    const r = await fetch(`https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${DATA_FILE}`, {
+      headers:{ Authorization:`Bearer ${tok}` }
+    });
+    if (!r.ok) return;
+    const meta = await r.json();
+    const remote = meta.lastModifiedDateTime || meta.eTag || null;
+    if (!remote) return;
+    if (lastKnownModified && remote !== lastKnownModified) {
+      lastKnownModified = remote;
+      const saved = await loadDataFile();
+      if (saved && Object.keys(saved).length > 0) {
+        if (saved.kits?.length)     data.kits         = saved.kits;
+        if (saved.surgeons?.length) data.surgeons     = saved.surgeons;
+        if (saved.surgeries)        data.surgeries    = saved.surgeries;
+        if (saved.consignments)     data.consignments = saved.consignments;
+        renderTimeline();
+        setStatus('ok', 'Updated ↺');
+        setTimeout(()=>setStatus('ok','Synced ✓'), 3000);
+      }
+    } else {
+      lastKnownModified = remote;
+    }
+  } catch(e) {}
+}
+
+function startPolling() {
+  clearInterval(pollTimer);
+  pollTimer = setInterval(checkForUpdates, 45000); // every 45 seconds
+}
+
+function stopPolling() {
+  clearInterval(pollTimer);
+  pollTimer = null;
 }
 
 // ═══════════════════════════════════════════════════
@@ -559,6 +605,7 @@ async function loadFromSP() {
   if (saved.surgeries)         data.surgeries    = saved.surgeries;    else data.surgeries = [];
   if (saved.consignments)      data.consignments = saved.consignments; else data.consignments = [];
   setStatus('ok', 'Loaded ✓');
+  startPolling();
 }
 
 // ═══════════════════════════════════════════════════
@@ -628,6 +675,7 @@ function getKitStatusToday(kit) {
     if (td>s.date && td<=rE)      return 'transit';
     if (td>rE && td<=pE)          return 'processing';
   }
+  if (getKitConsignmentToday(kit)) return 'consigned';
   return 'available';
 }
 
@@ -701,8 +749,8 @@ function buildKitRow(kit,dates,td) {
     const l=(si/dates.length*100).toFixed(2),w=((ei-si+1)/dates.length*100).toFixed(2);
     const c=kit.color,custom=sIsCustom(sp.surgery);
     let cls='',style='',lblStyle='';
-    if(sp.type==='surgery'){cls='span-surgery';style=`background:${hexFaint(c,.28)};border-color:${c};`;lblStyle=`color:${hexDark(c)}`;}
-    else if(sp.type==='transit-out'||sp.type==='transit-in'){cls='span-transit';style=`background:${hexFaint(c,.14)};border-color:${c};`;lblStyle=`color:${hexDark(c)}`;}
+    if(sp.type==='surgery'){cls='span-surgery';style=`background:${c};border-color:${c};`;lblStyle='color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.25);';}
+    else if(sp.type==='transit-out'||sp.type==='transit-in'){cls='span-transit';style=`background:repeating-linear-gradient(45deg,${hexFaint(c,.38)} 0,${hexFaint(c,.38)} 3px,${hexFaint(c,.12)} 3px,${hexFaint(c,.12)} 8px);border-color:${c};`;lblStyle=`color:${hexDark(c)}`;}
     else{cls='span-proc';}
     const label=sp.type==='surgery'?`${kit.name} — ${sp.surgery.hospital}`:sp.type==='transit-out'?`${kit.name} out`:sp.type==='transit-in'?`${kit.name} ret`:`${kit.name} proc`;
     const s=sp.surgery;
@@ -722,10 +770,9 @@ function buildKitRow(kit,dates,td) {
 function renderSidebar() {
   document.getElementById('kitStatusList').innerHTML=data.kits.filter(k=>k.active).map(k=>{
     const s=getKitStatusToday(k);
-    const p=s==='available'?'pill-available':s==='transit'?'pill-transit':s==='surgery'?'pill-surgery':'pill-processing';
-    const consign=getKitConsignmentToday(k);
-    const consignTag=consign?`<span class="pill" style="background:var(--c-blue-fill);color:var(--c-blue-txt);margin-left:3px" title="Consigned to ${consign.surgeonName}">↦</span>`:'';
-    return `<div class="kit-chip"><div class="kit-dot" style="background:${k.color}"></div><span class="kit-name">${k.name}</span><span class="pill ${p}">${s}</span>${consignTag}</div>`;
+    const p=s==='available'?'pill-available':s==='transit'?'pill-transit':s==='surgery'?'pill-surgery':s==='consigned'?'pill-consigned':'pill-processing';
+    const label=s==='consigned'?`Consigned`:s;
+    return `<div class="kit-chip"><div class="kit-dot" style="background:${k.color}"></div><span class="kit-name">${k.name}</span><span class="pill ${p}">${label}</span></div>`;
   }).join('');
   const ua=data.surgeries.filter(s=>!s.kitId).sort((a,b)=>a.date.localeCompare(b.date));
   document.getElementById('unassignedBadge').textContent=ua.length;
@@ -1055,6 +1102,7 @@ function wireEvents() {
   });
 
   document.getElementById('btnSignOut').addEventListener('click',async()=>{
+    stopPolling();
     await msal.logoutPopup();
     document.getElementById('mainApp').style.display='none';
     document.getElementById('authScreen').style.display='flex';
@@ -1126,6 +1174,7 @@ async function boot() {
       launchMainApp(r.account.name||r.account.username);
       await loadFromSP();
       renderTimeline();
+      startPolling();
     } catch(e) {
       const kind=classifyAuthError(e);
       if(kind==='consent'){
@@ -1147,6 +1196,7 @@ async function boot() {
       launchMainApp(accounts[0].name||accounts[0].username);
       await loadFromSP();
       renderTimeline();
+      startPolling();
     } catch(e) {
       // Cached session exists but token is invalid/stale/needs new consent.
       // Clear the cache and drop back to sign-in screen with a helpful message.
