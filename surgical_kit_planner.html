@@ -150,10 +150,13 @@ body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; backg
 .t-span:hover { filter:brightness(.88); z-index:5; }
 .t-span-lbl { font-size:10px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding:0 4px; }
 .span-surgery { border:1.5px solid; }
-.span-transit { border:1.5px dashed; opacity:.55; }
-.span-proc { background:var(--c-purple-fill) !important; border:1.5px dashed var(--c-purple-bd) !important; opacity:.5; }
+.span-transit { border:1.5px dashed; opacity:.82; }
+.span-proc { background:var(--c-purple-fill) !important; border:1.5px dashed var(--c-purple-bd) !important; opacity:.88; }
 .span-proc .t-span-lbl { color:var(--c-purple-txt) !important; }
+.span-consign { top:0 !important; bottom:0 !important; border-radius:0; border:none !important; opacity:.11; z-index:1; pointer-events:none; cursor:default !important; }
+.span-consign:hover { filter:none; }
 .custom-dot { position:absolute; top:3px; right:3px; width:5px; height:5px; border-radius:50%; background:var(--c-amber-bd); }
+.btn-icon { padding:5px 9px; font-size:15px; line-height:1; }
 
 /* ── Modal ── */
 .overlay { position:fixed; inset:0; background:rgba(0,0,0,.38); z-index:100; display:flex; align-items:center; justify-content:center; padding:16px; }
@@ -229,18 +232,12 @@ body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; backg
     <span class="status-txt" id="statusTxt"></span>
     <span class="saving-badge" id="savingBadge">Saving...</span>
     <span id="userDisplay" style="font-size:11px;color:var(--c-muted)"></span>
+    <button class="btn btn-sm btn-icon" id="btnSettings" title="Settings">⚙</button>
     <button class="btn btn-sm btn-primary" id="btnAdd">+ Surgery</button>
   </div>
 
   <div class="main">
     <div class="sidebar" id="sidebar">
-      <div>
-        <div class="s-label">Global transit defaults</div>
-        <div class="s-row"><label>Outbound (days)</label><input type="number" id="cfgOut" min="1" max="14" value="3"></div>
-        <div class="s-row"><label>Return (days)</label><input type="number" id="cfgRet" min="1" max="14" value="3"></div>
-        <div class="s-row"><label>Processing (days)</label><input type="number" id="cfgProc" min="1" max="30" value="7"></div>
-      </div>
-      <div class="divider"></div>
       <div>
         <div class="s-label">Kit status — today</div>
         <div id="kitStatusList"></div>
@@ -275,9 +272,10 @@ body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; backg
       </div>
       <div class="legend">
         <div class="leg"><div class="leg-box" style="background:#FFF3CD;border:1.5px solid #E6A817"></div>Surgery day</div>
-        <div class="leg"><div class="leg-box" style="background:#DCF0FF;border:1.5px dashed #2E90D4;opacity:.7"></div>In transit</div>
-        <div class="leg"><div class="leg-box" style="background:var(--c-purple-fill);border:1.5px dashed var(--c-purple-bd);opacity:.6"></div>Processing</div>
+        <div class="leg"><div class="leg-box" style="background:#DCF0FF;border:1.5px dashed #2E90D4"></div>In transit</div>
+        <div class="leg"><div class="leg-box" style="background:var(--c-purple-fill);border:1.5px dashed var(--c-purple-bd)"></div>Processing</div>
         <div class="leg"><div class="leg-box" style="background:var(--c-red-fill);border:1.5px solid var(--c-red-bd)"></div>Unassigned</div>
+        <div class="leg"><div class="leg-box" style="background:#2E90D4;opacity:.2;border:1px solid #2E90D4"></div>Consigned</div>
         <div class="leg"><div style="width:7px;height:7px;border-radius:50%;background:var(--c-amber-bd);margin-right:2px"></div>Custom transit</div>
       </div>
       <div class="tl-wrap" id="tlWrap"></div>
@@ -353,13 +351,37 @@ body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; backg
 <div class="overlay" id="kitsModal" style="display:none">
   <div class="modal">
     <div class="modal-hdr"><div class="modal-title">Manage kits</div><button class="modal-x" id="kitsX">&times;</button></div>
-    <div class="modal-body">
+    <div class="modal-body" style="max-height:480px">
       <div id="kitsManageList"></div>
       <div class="divider" style="margin:11px 0"></div>
       <div class="f-field"><label class="f-lbl">New kit name</label><input type="text" class="f-input" id="fNewKit" placeholder="e.g. Set G"></div>
       <button class="btn btn-primary btn-sm" id="btnSaveKit">Add kit</button>
     </div>
     <div class="modal-ftr"><button class="btn" id="kitsClose">Close</button></div>
+  </div>
+</div>
+
+<!-- SETTINGS MODAL -->
+<div class="overlay" id="settingsModal" style="display:none">
+  <div class="modal">
+    <div class="modal-hdr"><div class="modal-title">Settings</div><button class="modal-x" id="settingsX">&times;</button></div>
+    <div class="modal-body">
+      <div class="s-label" style="margin-bottom:10px">Global transit defaults</div>
+      <div class="f-field">
+        <label class="f-lbl">Outbound days</label>
+        <input type="number" class="f-input" id="cfgOut" min="1" max="14" value="3" style="width:80px;text-align:center">
+      </div>
+      <div class="f-field">
+        <label class="f-lbl">Return days</label>
+        <input type="number" class="f-input" id="cfgRet" min="1" max="14" value="3" style="width:80px;text-align:center">
+      </div>
+      <div class="f-field">
+        <label class="f-lbl">Processing days</label>
+        <input type="number" class="f-input" id="cfgProc" min="1" max="30" value="7" style="width:80px;text-align:center">
+      </div>
+      <div style="font-size:11px;color:var(--c-hint);margin-top:4px">These apply to all surgeries unless overridden per surgery.</div>
+    </div>
+    <div class="modal-ftr"><button class="btn" id="settingsClose">Close</button></div>
   </div>
 </div>
 
@@ -493,7 +515,7 @@ function autoSave() {
 // ═══════════════════════════════════════════════════
 let cfg = { outboundDays:3, returnDays:3, processingDays:7 };
 
-let data = { kits:[], surgeons:[], surgeries:[] };
+let data = { kits:[], surgeons:[], surgeries:[], consignments:[] };
 
 // Fallback demo data used only if SP lists are empty
 const DEMO = {
@@ -532,9 +554,10 @@ async function loadFromSP() {
     return;   // leave error status visible
   }
   // saved === {} means new file (404) — fresh start
-  if (saved.kits?.length)      data.kits      = saved.kits;      else data.kits      = DEMO.kits;
-  if (saved.surgeons?.length)  data.surgeons  = saved.surgeons;  else data.surgeons  = DEMO.surgeons;
-  if (saved.surgeries)         data.surgeries = saved.surgeries; else data.surgeries = [];
+  if (saved.kits?.length)      data.kits         = saved.kits;         else data.kits      = DEMO.kits;
+  if (saved.surgeons?.length)  data.surgeons     = saved.surgeons;     else data.surgeons  = DEMO.surgeons;
+  if (saved.surgeries)         data.surgeries    = saved.surgeries;    else data.surgeries = [];
+  if (saved.consignments)      data.consignments = saved.consignments; else data.consignments = [];
   setStatus('ok', 'Loaded ✓');
 }
 
@@ -647,8 +670,30 @@ function renderTimeline() {
   bindSpanEvents();
 }
 
+function getKitConsignmentToday(kit) {
+  const td=today();
+  return (data.consignments||[]).find(c=>c.kitId===kit.id&&(c.permanent||(c.startDate<=td&&(!c.endDate||c.endDate>=td))));
+}
+
+function getConsignmentSpans(kit,dates) {
+  const monthStart=dates[0],monthEnd=dates[dates.length-1];
+  return (data.consignments||[]).filter(c=>c.kitId===kit.id).map(c=>{
+    const s=c.permanent?monthStart:(c.startDate<monthStart?monthStart:c.startDate);
+    const e=c.permanent?monthEnd:(!c.endDate?monthEnd:c.endDate>monthEnd?monthEnd:c.endDate);
+    if(s>monthEnd||e<monthStart||s>e)return null;
+    return{start:s,end:e,surgeonName:c.surgeonName};
+  }).filter(Boolean);
+}
+
 function buildKitRow(kit,dates,td) {
+  const consignToday=getKitConsignmentToday(kit);
   const cells=dates.map(ds=>{const dow=new Date(ds+'T12:00:00').getDay();return`<div class="tl-cell${(dow===0||dow===6)?' is-wknd':''}${ds===td?' is-today':''}"></div>`;}).join('');
+  const consignSpans=getConsignmentSpans(kit,dates).map(cs=>{
+    let si=dates.indexOf(cs.start),ei=dates.indexOf(cs.end);
+    si=si<0?0:si; ei=ei<0?dates.length-1:ei;
+    const l=(si/dates.length*100).toFixed(2),w=((ei-si+1)/dates.length*100).toFixed(2);
+    return `<div class="t-span span-consign" style="left:${l}%;width:${w}%;background:${kit.color}"></div>`;
+  }).join('');
   const spans=getKitSpans(kit).map(sp=>{
     let si=dates.indexOf(sp.start),ei=dates.indexOf(sp.end);
     if(si<0&&ei<0)return'';
@@ -670,14 +715,17 @@ function buildKitRow(kit,dates,td) {
     const cdot=(custom&&sp.type==='surgery')?'<div class="custom-dot"></div>':'';
     return `<div class="t-span ${cls}" style="left:${l}%;width:${w}%;${style}" data-tip="${encodeURIComponent(tipLines)}" ${sidAttr}>${cdot}<span class="t-span-lbl" style="${lblStyle}">${label}</span></div>`;
   }).join('');
-  return `<div class="tl-row"><div class="tl-kit-lbl"><div class="tl-kit-dot" style="background:${kit.color}"></div><div class="tl-kit-name">${kit.name}</div></div><div class="tl-cells">${cells}<div class="span-layer">${spans}</div></div></div>`;
+  const consignLbl=consignToday?`<div style="font-size:9px;color:var(--c-muted);line-height:1.2;margin-top:1px;max-width:70px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Consigned to ${consignToday.surgeonName}">${consignToday.surgeonName}</div>`:'';
+  return `<div class="tl-row"><div class="tl-kit-lbl"><div class="tl-kit-dot" style="background:${kit.color}"></div><div><div class="tl-kit-name">${kit.name}</div>${consignLbl}</div></div><div class="tl-cells">${cells}<div class="span-layer">${consignSpans}${spans}</div></div></div>`;
 }
 
 function renderSidebar() {
   document.getElementById('kitStatusList').innerHTML=data.kits.filter(k=>k.active).map(k=>{
     const s=getKitStatusToday(k);
     const p=s==='available'?'pill-available':s==='transit'?'pill-transit':s==='surgery'?'pill-surgery':'pill-processing';
-    return `<div class="kit-chip"><div class="kit-dot" style="background:${k.color}"></div><span class="kit-name">${k.name}</span><span class="pill ${p}">${s}</span></div>`;
+    const consign=getKitConsignmentToday(k);
+    const consignTag=consign?`<span class="pill" style="background:var(--c-blue-fill);color:var(--c-blue-txt);margin-left:3px" title="Consigned to ${consign.surgeonName}">↦</span>`:'';
+    return `<div class="kit-chip"><div class="kit-dot" style="background:${k.color}"></div><span class="kit-name">${k.name}</span><span class="pill ${p}">${s}</span>${consignTag}</div>`;
   }).join('');
   const ua=data.surgeries.filter(s=>!s.kitId).sort((a,b)=>a.date.localeCompare(b.date));
   document.getElementById('unassignedBadge').textContent=ua.length;
@@ -772,14 +820,53 @@ function setStatus(state,txt) {
 // ═══════════════════════════════════════════════════
 function renderSurgeonsList() {
   document.getElementById('surgeonsList').innerHTML=data.surgeons.map(sg=>`
-    <div style="padding:7px 0;border-bottom:1px solid var(--c-border);display:flex;align-items:flex-start;gap:8px">
-      <div style="flex:1"><div style="font-size:13px;font-weight:700">${sg.name}</div>
-      <div style="font-size:12px;color:var(--c-muted);margin-top:2px">${sg.hospitals.join(', ')||'No hospitals'}</div></div>
-      <button class="btn btn-sm btn-danger" data-del-sg="${sg.id}">Remove</button>
+    <div style="padding:7px 0;border-bottom:1px solid var(--c-border)">
+      <div style="display:flex;align-items:flex-start;gap:8px">
+        <div style="flex:1">
+          <div style="font-size:13px;font-weight:700">${sg.name}</div>
+          <div style="font-size:12px;color:var(--c-muted);margin-top:2px">${sg.hospitals.join(', ')||'No hospitals'}</div>
+        </div>
+        <button class="btn btn-sm" data-edit-sg="${sg.id}">Edit</button>
+        <button class="btn btn-sm btn-danger" data-del-sg="${sg.id}">Remove</button>
+      </div>
+      <div id="sg-edit-${sg.id}" style="display:none;margin-top:8px;padding:9px;background:var(--c-bg);border-radius:var(--radius)">
+        <div class="f-field"><label class="f-lbl">Surgeon name</label><input type="text" class="f-input" id="sg-name-${sg.id}" value="${sg.name}"></div>
+        <div class="f-field"><label class="f-lbl">Hospitals (comma-separated)</label><input type="text" class="f-input" id="sg-hosps-${sg.id}" value="${sg.hospitals.join(', ')}"></div>
+        <div style="display:flex;gap:6px;justify-content:flex-end">
+          <button class="btn btn-sm" data-edit-cancel="${sg.id}">Cancel</button>
+          <button class="btn btn-sm btn-primary" data-save-sg="${sg.id}">Save</button>
+        </div>
+      </div>
     </div>`).join('')||'<div style="font-size:12px;color:var(--c-hint);padding:5px 0">No surgeons yet.</div>';
+
+  document.querySelectorAll('[data-edit-sg]').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      const panel=document.getElementById('sg-edit-'+btn.dataset.editSg);
+      const isOpen=panel.style.display!=='none';
+      document.querySelectorAll('[id^="sg-edit-"]').forEach(p=>p.style.display='none');
+      if(!isOpen) panel.style.display='block';
+    });
+  });
+  document.querySelectorAll('[data-edit-cancel]').forEach(btn=>btn.addEventListener('click',()=>{
+    document.getElementById('sg-edit-'+btn.dataset.editCancel).style.display='none';
+  }));
+  document.querySelectorAll('[data-save-sg]').forEach(btn=>btn.addEventListener('click',async()=>{
+    const id=btn.dataset.saveSg;
+    const sg=data.surgeons.find(x=>x.id===id);
+    if(!sg)return;
+    const name=document.getElementById('sg-name-'+id).value.trim();
+    const hosps=document.getElementById('sg-hosps-'+id).value.trim();
+    if(!name){alert('Surgeon name required.');return;}
+    const oldName=sg.name;
+    sg.name=name;
+    sg.hospitals=hosps?hosps.split(',').map(h=>h.trim()).filter(Boolean):[];
+    data.surgeries.forEach(s=>{if(s.surgeon===oldName)s.surgeon=name;});
+    data.consignments.forEach(c=>{if(c.surgeonName===oldName)c.surgeonName=name;});
+    autoSave();
+    renderSurgeonsList();renderTimeline();
+  }));
   document.querySelectorAll('[data-del-sg]').forEach(btn=>btn.addEventListener('click',async()=>{
     if(!confirm('Remove this surgeon?'))return;
-    const sg=data.surgeons.find(x=>x.id===btn.dataset.delSg);
     data.surgeons=data.surgeons.filter(x=>x.id!==btn.dataset.delSg);
     autoSave();
     renderSurgeonsList();renderTimeline();
@@ -788,14 +875,85 @@ function renderSurgeonsList() {
 
 function renderKitsList() {
   document.getElementById('kitsManageList').innerHTML=data.kits.map(k=>`
-    <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--c-border)">
-      <div style="width:12px;height:12px;border-radius:2px;background:${k.color};flex-shrink:0"></div>
-      <span style="font-size:13px;flex:1">${k.name}</span>
-      <button class="btn btn-sm" data-toggle="${k.id}">${k.active?'Deactivate':'Activate'}</button>
+    <div style="border-bottom:1px solid var(--c-border)">
+      <div style="display:flex;align-items:center;gap:8px;padding:7px 0">
+        <div style="width:12px;height:12px;border-radius:2px;background:${k.color};flex-shrink:0"></div>
+        <span style="font-size:13px;font-weight:600;flex:1">${k.name}${!k.active?' <span style="font-size:10px;color:var(--c-hint);font-weight:400">(inactive)</span>':''}</span>
+        <button class="btn btn-sm" data-consign-open="${k.id}">Consign ▾</button>
+        <button class="btn btn-sm" data-toggle="${k.id}">${k.active?'Deactivate':'Activate'}</button>
+      </div>
+      <div id="consign-panel-${k.id}" style="display:none;padding:0 0 10px 20px">${renderConsignmentPanel(k)}</div>
     </div>`).join('');
+
   document.querySelectorAll('[data-toggle]').forEach(btn=>btn.addEventListener('click',async()=>{
     const k=data.kits.find(x=>x.id===btn.dataset.toggle);
     if(k){k.active=!k.active;await saveKit(k);renderKitsList();renderTimeline();}
+  }));
+  document.querySelectorAll('[data-consign-open]').forEach(btn=>btn.addEventListener('click',()=>{
+    const panel=document.getElementById('consign-panel-'+btn.dataset.consignOpen);
+    const isOpen=panel.style.display!=='none';
+    document.querySelectorAll('[id^="consign-panel-"]').forEach(p=>p.style.display='none');
+    document.querySelectorAll('[data-consign-open]').forEach(b=>b.textContent=b.textContent.replace('▴','▾'));
+    if(!isOpen){panel.style.display='block';btn.textContent='Consign ▴';}
+  }));
+  wireConsignmentPanels();
+}
+
+function renderConsignmentPanel(k) {
+  const cs=(data.consignments||[]).filter(c=>c.kitId===k.id);
+  const surgOpts=data.surgeons.map(sg=>`<option value="${sg.name}">${sg.name}</option>`).join('');
+  const list=cs.length?cs.map(c=>`
+    <div style="display:flex;align-items:center;gap:6px;padding:4px 0;font-size:12px;border-bottom:1px solid var(--c-border)">
+      <div style="flex:1"><strong>${c.surgeonName}</strong>
+        <span style="color:var(--c-muted);margin-left:5px">${c.permanent?'Permanent':`${fmtDate(c.startDate)} – ${c.endDate?fmtDate(c.endDate):'ongoing'}`}</span>
+      </div>
+      <button class="btn btn-sm btn-danger" data-del-consign="${c.id}">×</button>
+    </div>`).join('')
+    :'<div style="font-size:11px;color:var(--c-hint);padding:3px 0 6px">No consignments</div>';
+  return `
+    <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--c-hint);margin-bottom:5px;margin-top:4px">Consigned to</div>
+    ${list}
+    <div style="margin-top:8px;display:grid;grid-template-columns:1fr auto;gap:6px;align-items:end">
+      <div><label class="f-lbl">Surgeon</label>
+        <select class="f-input" id="csg-${k.id}" style="font-size:12px;padding:5px 7px">
+          <option value="">— select —</option>${surgOpts}
+        </select>
+      </div>
+      <div style="padding-bottom:1px"><button class="btn btn-sm btn-primary" data-add-consign="${k.id}">Add</button></div>
+    </div>
+    <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;margin-top:7px">
+      <input type="checkbox" id="cperm-${k.id}" checked> Permanent (no end date)
+    </label>
+    <div id="cdates-${k.id}" style="display:none;margin-top:6px;grid-template-columns:1fr 1fr;gap:6px">
+      <div><label class="f-lbl">Start</label><input type="date" class="f-input" id="cstart-${k.id}" style="padding:5px;font-size:12px"></div>
+      <div><label class="f-lbl">End (optional)</label><input type="date" class="f-input" id="cend-${k.id}" style="padding:5px;font-size:12px"></div>
+    </div>`;
+}
+
+function wireConsignmentPanels() {
+  document.querySelectorAll('[id^="cperm-"]').forEach(cb=>{
+    const kid=cb.id.slice(6);
+    const datesEl=document.getElementById('cdates-'+kid);
+    if(datesEl){ cb.addEventListener('change',()=>{ datesEl.style.display=cb.checked?'none':'grid'; }); }
+  });
+  document.querySelectorAll('[data-add-consign]').forEach(btn=>btn.addEventListener('click',async()=>{
+    const kid=btn.dataset.addConsign;
+    const surgeonName=document.getElementById('csg-'+kid)?.value;
+    const permanent=document.getElementById('cperm-'+kid)?.checked!==false;
+    const startDate=document.getElementById('cstart-'+kid)?.value||null;
+    const endDate=document.getElementById('cend-'+kid)?.value||null;
+    if(!surgeonName){alert('Select a surgeon.');return;}
+    if(!permanent&&!startDate){alert('Enter a start date or tick Permanent.');return;}
+    if(!data.consignments)data.consignments=[];
+    data.consignments.push({id:'c'+Date.now(),kitId:kid,surgeonName,permanent,startDate:permanent?null:startDate,endDate:permanent?null:endDate||null});
+    autoSave();renderKitsList();renderTimeline();
+    const panel=document.getElementById('consign-panel-'+kid);
+    if(panel)panel.style.display='block';
+  }));
+  document.querySelectorAll('[data-del-consign]').forEach(btn=>btn.addEventListener('click',async()=>{
+    if(!confirm('Remove this consignment?'))return;
+    data.consignments=(data.consignments||[]).filter(c=>c.id!==btn.dataset.delConsign);
+    autoSave();renderKitsList();renderTimeline();
   }));
 }
 
@@ -812,6 +970,9 @@ function wireEvents() {
     try{localStorage.setItem('skp_cfg',JSON.stringify(cfg));}catch(e){}
     renderTimeline();
   }));
+  document.getElementById('btnSettings').addEventListener('click',()=>document.getElementById('settingsModal').style.display='flex');
+  document.getElementById('settingsX').addEventListener('click',()=>document.getElementById('settingsModal').style.display='none');
+  document.getElementById('settingsClose').addEventListener('click',()=>document.getElementById('settingsModal').style.display='none');
   document.getElementById('btnAdd').addEventListener('click',()=>openModal(null));
   document.getElementById('fSurgeon').addEventListener('change',e=>{const sg=data.surgeons.find(x=>x.id===e.target.value);fillHospitals(sg?.name||null,null);refreshKitsFromModal();});
   document.getElementById('fDate').addEventListener('change',()=>refreshKitsFromModal());
@@ -903,7 +1064,7 @@ function wireEvents() {
     document.getElementById('sidebar').classList.toggle('open');
   });
 
-  ['surgModal','surgeonsModal','kitsModal'].forEach(id=>
+  ['surgModal','surgeonsModal','kitsModal','settingsModal'].forEach(id=>
     document.getElementById(id).addEventListener('click',e=>{if(e.target.id===id)e.target.style.display='none';})
   );
 }
