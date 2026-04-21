@@ -405,18 +405,34 @@ async function getToken() {
 
 async function graphGet(path) {
   const tok = await getToken();
-  if (!tok) return null;
-  const r = await fetch(`https://graph.microsoft.com/v1.0${path}`, {
-    headers:{ Authorization:`Bearer ${tok}` }
-  });
-  if (!r.ok) return null;
-  return r.json();
+  if (!tok) return { _err:true, status:0, msg:'Not signed in' };
+  try {
+    const r = await fetch(`https://graph.microsoft.com/v1.0${path}`, {
+      headers:{ Authorization:`Bearer ${tok}` }
+    });
+    if (!r.ok) {
+      let msg = `HTTP ${r.status}`;
+      try { const e = await r.json(); msg += ': ' + (e.error?.message || e.error?.code || JSON.stringify(e)); } catch(x){}
+      console.error('Graph API error', path, msg);
+      return { _err:true, status:r.status, msg };
+    }
+    return r.json();
+  } catch(e) {
+    console.error('Graph fetch error', path, e.message);
+    return { _err:true, status:0, msg:e.message };
+  }
 }
 
 async function getDriveId() {
   if (driveId) return driveId;
   const r = await graphGet(`/sites/${SP_HOST}:${SP_SITE_REL}:/drive`);
+  if (!r || r._err) {
+    const msg = r ? r.msg : 'No response';
+    setStatus('err', `SP access failed (${r?.status||'?'}): ${msg}`);
+    return null;
+  }
   if (r?.id) { driveId = r.id; return driveId; }
+  setStatus('err', 'Could not get SharePoint drive — check site URL');
   return null;
 }
 
@@ -424,26 +440,47 @@ async function loadDataFile() {
   const did = await getDriveId();
   if (!did) return null;
   const tok = await getToken();
-  const r = await fetch(`https://graph.microsoft.com/v1.0/drives/${did}/root:/${DATA_FILE}:/content`, {
-    headers:{ Authorization:`Bearer ${tok}` }
-  });
-  if (r.status === 404) return null;
-  if (!r.ok) return null;
-  return r.json();
+  try {
+    const r = await fetch(`https://graph.microsoft.com/v1.0/drives/${did}/root:/${DATA_FILE}:/content`, {
+      headers:{ Authorization:`Bearer ${tok}` }
+    });
+    if (r.status === 404) return {};   // new — no file yet, start fresh
+    if (!r.ok) {
+      let msg = `HTTP ${r.status}`;
+      try { const e = await r.json(); msg += ': ' + (e.error?.message || ''); } catch(x){}
+      setStatus('err', `Load failed: ${msg}`);
+      return null;
+    }
+    return r.json();
+  } catch(e) {
+    setStatus('err', `Load error: ${e.message}`);
+    return null;
+  }
 }
 
 async function saveDataFile() {
   const did = await getDriveId();
-  if (!did) return;
+  if (!did) return;   // getDriveId already set error status
   showSaving(true);
-  const tok = await getToken();
-  await fetch(`https://graph.microsoft.com/v1.0/drives/${did}/root:/${DATA_FILE}:/content`, {
-    method: 'PUT',
-    headers:{ Authorization:`Bearer ${tok}`, 'Content-Type':'application/json' },
-    body: JSON.stringify(data)
-  });
-  showSaving(false);
-  setStatus('ok', 'Synced');
+  try {
+    const tok = await getToken();
+    const r = await fetch(`https://graph.microsoft.com/v1.0/drives/${did}/root:/${DATA_FILE}:/content`, {
+      method: 'PUT',
+      headers:{ Authorization:`Bearer ${tok}`, 'Content-Type':'application/json' },
+      body: JSON.stringify(data)
+    });
+    showSaving(false);
+    if (!r.ok) {
+      let msg = `HTTP ${r.status}`;
+      try { const e = await r.json(); msg += ': ' + (e.error?.message || ''); } catch(x){}
+      setStatus('err', `Save failed: ${msg}`);
+      return;
+    }
+    setStatus('ok', 'Synced ✓');
+  } catch(e) {
+    showSaving(false);
+    setStatus('err', `Save error: ${e.message}`);
+  }
 }
 
 function autoSave() {
@@ -486,16 +523,19 @@ let editingId = null;
 async function loadFromSP() {
   setStatus('spin', 'Loading data...');
   const saved = await loadDataFile();
-  if (saved) {
-    if (saved.kits?.length)      data.kits      = saved.kits;
-    if (saved.surgeons?.length)  data.surgeons  = saved.surgeons;
-    if (saved.surgeries)         data.surgeries = saved.surgeries;
-  } else {
+  if (saved === null) {
+    // Error already shown in status bar by getDriveId / loadDataFile.
+    // Populate with demo kits/surgeons so the UI is usable.
     data.kits      = DEMO.kits;
     data.surgeons  = DEMO.surgeons;
     data.surgeries = [];
+    return;   // leave error status visible
   }
-  setStatus('ok', 'Loaded');
+  // saved === {} means new file (404) — fresh start
+  if (saved.kits?.length)      data.kits      = saved.kits;      else data.kits      = DEMO.kits;
+  if (saved.surgeons?.length)  data.surgeons  = saved.surgeons;  else data.surgeons  = DEMO.surgeons;
+  if (saved.surgeries)         data.surgeries = saved.surgeries; else data.surgeries = [];
+  setStatus('ok', 'Loaded ✓');
 }
 
 // ═══════════════════════════════════════════════════
