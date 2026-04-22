@@ -3699,6 +3699,28 @@ async function _getDriveId(){
     const j=await r.json(); _driveId=j.id; return _driveId;
   }catch(e){ return null; }
 }
+function _csvEscape(v){const s=String(v);return(s.includes(',')||s.includes('"')||s.includes('\n'))?'"'+s.replace(/"/g,'""')+'"':s;}
+async function _logAccess(action){
+  try{
+    const tok=await _getToken(); if(!tok) return;
+    const did=_driveId; if(!did) return;
+    const acct=_msal.getAllAccounts()[0];
+    const userName=_csvEscape(acct?.name||'Unknown');
+    const userEmail=_csvEscape(acct?.username||'Unknown');
+    const ts=new Date().toISOString();
+    const newRow=`${ts},${userName},${userEmail},${_csvEscape(action||'access')}\n`;
+    const logFile='axispilot_access_log.csv';
+    const header='timestamp,user,email,action\n';
+    let existing=header;
+    try{
+      const r=await fetch(`https://graph.microsoft.com/v1.0/drives/${did}/root:/${logFile}:/content`,{headers:{Authorization:`Bearer ${tok}`}});
+      if(r.ok) existing=await r.text();
+    }catch(e){}
+    const content=existing.endsWith('\n')?existing+newRow:existing+'\n'+newRow;
+    await fetch(`https://graph.microsoft.com/v1.0/drives/${did}/root:/${logFile}:/content`,
+      {method:'PUT',headers:{Authorization:`Bearer ${tok}`,'Content-Type':'text/csv'},body:content});
+  }catch(e){}
+}
 function saveState(action){
   if(!_spReady) return;
   if(action) _nextSaveAction=action;
@@ -3763,6 +3785,7 @@ async function _loadFromSP(){
   _spReady=true;
   setStatus('ok','Loaded ✓');
   _startPolling();
+  _logAccess('login').catch(()=>{});
 }
 async function _checkForUpdates(force){
   if(!_driveId||(_saveTimer&&!force)) return;
