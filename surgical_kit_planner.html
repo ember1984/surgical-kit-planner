@@ -208,6 +208,23 @@ body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; backg
 @media(max-width:700px){ .menu-btn{ display:flex; } }
 
 .tooltip { position:fixed; background:#1a1a1a; color:#f0f0f0; font-size:11px; padding:5px 9px; border-radius:var(--radius); pointer-events:none; z-index:200; max-width:210px; line-height:1.5; white-space:pre-line; }
+
+/* ── History tab ── */
+.tab-bar { display:flex; gap:4px; margin-bottom:14px; border-bottom:1px solid var(--c-border); padding-bottom:10px; }
+.tab-btn { padding:5px 14px; border:1px solid transparent; border-radius:var(--radius); background:none; color:var(--c-muted); font-size:13px; font-weight:500; cursor:pointer; transition:all .12s; }
+.tab-btn.active { background:#2E90D4; color:#fff; border-color:#2E90D4; }
+.tab-btn:hover:not(.active) { background:var(--c-bg); color:var(--c-text); border-color:var(--c-border-mid); }
+.cl-wrap { background:var(--c-surf); border:1px solid var(--c-border); border-radius:var(--radius-lg); overflow:hidden; }
+.cl-table { width:100%; border-collapse:collapse; font-size:12px; }
+.cl-table th { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--c-hint); text-align:left; padding:8px 12px; border-bottom:2px solid var(--c-border); background:var(--c-gray-fill); white-space:nowrap; }
+.cl-table td { padding:8px 12px; border-bottom:1px solid var(--c-border); vertical-align:middle; }
+.cl-table tr:last-child td { border-bottom:none; }
+.cl-table tr:hover td { background:var(--c-bg); }
+.cl-time { color:var(--c-muted); white-space:nowrap; font-size:11px; }
+.cl-action { font-weight:600; white-space:nowrap; }
+.cl-detail { color:var(--c-muted); }
+.cl-user { color:var(--c-hint); font-size:11px; white-space:nowrap; }
+.cl-empty { padding:28px; text-align:center; color:var(--c-hint); font-size:13px; }
 </style>
 </head>
 <body>
@@ -265,34 +282,52 @@ body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; backg
     </div>
 
     <div class="content">
-      <div class="cal-hdr">
-        <div class="cal-nav">
-          <button id="prevMonth">&#8249;</button>
-          <span class="cal-month" id="monthLabel"></span>
-          <button id="nextMonth">&#8250;</button>
+      <div class="tab-bar">
+        <button class="tab-btn active" id="tabTimeline">Timeline</button>
+        <button class="tab-btn" id="tabHistory">History</button>
+      </div>
+      <div id="panelTimeline">
+        <div class="cal-hdr">
+          <div class="cal-nav">
+            <button id="prevMonth">&#8249;</button>
+            <span class="cal-month" id="monthLabel"></span>
+            <button id="nextMonth">&#8250;</button>
+          </div>
+          <button class="btn btn-sm" id="btnToday">Today</button>
+          <div class="view-toggle">
+            <button class="btn btn-sm view-btn" data-days="14">2 wk</button>
+            <button class="btn btn-sm view-btn active" data-days="30">30d</button>
+            <button class="btn btn-sm view-btn" data-days="60">60d</button>
+          </div>
+          <div class="cal-stats">
+            <div class="stat-card"><div class="stat-val" id="stTotal">0</div><div class="stat-lbl">in view</div></div>
+            <div class="stat-card"><div class="stat-val" id="stAssigned">0</div><div class="stat-lbl">assigned</div></div>
+            <div class="stat-card warn"><div class="stat-val" id="stUnassigned">0</div><div class="stat-lbl">unassigned</div></div>
+          </div>
         </div>
-        <button class="btn btn-sm" id="btnToday">Today</button>
-        <div class="view-toggle">
-          <button class="btn btn-sm view-btn" data-days="14">2 wk</button>
-          <button class="btn btn-sm view-btn active" data-days="30">30d</button>
-          <button class="btn btn-sm view-btn" data-days="60">60d</button>
+        <div class="legend">
+          <div class="leg"><div class="leg-box" style="background:#FFF3CD;border:1.5px solid #E6A817"></div>Surgery day</div>
+          <div class="leg"><div class="leg-box" style="background:#DCF0FF;border:1.5px dashed #2E90D4"></div>In transit</div>
+          <div class="leg"><div class="leg-box" style="background:var(--c-purple-fill);border:1.5px dashed var(--c-purple-bd)"></div>Processing</div>
+          <div class="leg"><div class="leg-box" style="background:var(--c-red-fill);border:1.5px solid var(--c-red-bd)"></div>Unassigned</div>
+          <div class="leg"><div class="leg-box" style="background:#2E90D4;opacity:.2;border:1px solid #2E90D4"></div>Consigned</div>
+          <div class="leg"><div style="width:7px;height:7px;border-radius:50%;background:var(--c-amber-bd);margin-right:2px"></div>Custom transit</div>
         </div>
-        <div class="cal-stats">
-          <div class="stat-card"><div class="stat-val" id="stTotal">0</div><div class="stat-lbl">in view</div></div>
-          <div class="stat-card"><div class="stat-val" id="stAssigned">0</div><div class="stat-lbl">assigned</div></div>
-          <div class="stat-card warn"><div class="stat-val" id="stUnassigned">0</div><div class="stat-lbl">unassigned</div></div>
+        <div class="tl-wrap" id="tlWrap"></div>
+        <div id="tlUnassigned" style="margin-top:8px"></div>
+      </div>
+      <div id="panelHistory" style="display:none">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+          <div style="font-size:15px;font-weight:700">Change history</div>
+          <span id="clCount" style="font-size:12px;color:var(--c-muted)"></span>
+        </div>
+        <div class="cl-wrap">
+          <table class="cl-table">
+            <thead><tr><th>When</th><th>Action</th><th>Detail</th><th>By</th><th></th></tr></thead>
+            <tbody id="clBody"></tbody>
+          </table>
         </div>
       </div>
-      <div class="legend">
-        <div class="leg"><div class="leg-box" style="background:#FFF3CD;border:1.5px solid #E6A817"></div>Surgery day</div>
-        <div class="leg"><div class="leg-box" style="background:#DCF0FF;border:1.5px dashed #2E90D4"></div>In transit</div>
-        <div class="leg"><div class="leg-box" style="background:var(--c-purple-fill);border:1.5px dashed var(--c-purple-bd)"></div>Processing</div>
-        <div class="leg"><div class="leg-box" style="background:var(--c-red-fill);border:1.5px solid var(--c-red-bd)"></div>Unassigned</div>
-        <div class="leg"><div class="leg-box" style="background:#2E90D4;opacity:.2;border:1px solid #2E90D4"></div>Consigned</div>
-        <div class="leg"><div style="width:7px;height:7px;border-radius:50%;background:var(--c-amber-bd);margin-right:2px"></div>Custom transit</div>
-      </div>
-      <div class="tl-wrap" id="tlWrap"></div>
-      <div id="tlUnassigned" style="margin-top:8px"></div>
     </div>
   </div>
 </div>
@@ -547,6 +582,7 @@ async function checkForUpdates() {
         if (saved.surgeons?.length) data.surgeons     = saved.surgeons;
         if (saved.surgeries)        data.surgeries    = saved.surgeries;
         if (saved.consignments)     data.consignments = saved.consignments;
+        if (saved.changelog)        data.changelog    = saved.changelog;
         renderTimeline();
         setStatus('ok', 'Updated ↺');
         setTimeout(()=>setStatus('ok','Synced ✓'), 3000);
@@ -572,7 +608,8 @@ function stopPolling() {
 // ═══════════════════════════════════════════════════
 let cfg = { outboundDays:3, returnDays:3, processingDays:7 };
 
-let data = { kits:[], surgeons:[], surgeries:[], consignments:[] };
+let data = { kits:[], surgeons:[], surgeries:[], consignments:[], changelog:[] };
+let currentUser = '';
 
 // Fallback demo data used only if SP lists are empty
 const DEMO = {
@@ -615,6 +652,7 @@ async function loadFromSP() {
   if (saved.surgeons?.length)  data.surgeons     = saved.surgeons;     else data.surgeons  = DEMO.surgeons;
   if (saved.surgeries)         data.surgeries    = saved.surgeries;    else data.surgeries = [];
   if (saved.consignments)      data.consignments = saved.consignments; else data.consignments = [];
+  if (saved.changelog)         data.changelog    = saved.changelog;    else data.changelog = [];
   setStatus('ok', 'Loaded ✓');
   startPolling();
 }
@@ -630,6 +668,65 @@ async function saveSurgery(s)  { autoSave(); }
 async function deleteSurgery(s){ autoSave(); }
 async function saveSurgeon(sg) { autoSave(); }
 async function saveKit(k)      { autoSave(); }
+
+// ═══════════════════════════════════════════════════
+// CHANGELOG
+// ═══════════════════════════════════════════════════
+function recordChange(action, detail) {
+  if (!data.changelog) data.changelog = [];
+  const snapshot = JSON.parse(JSON.stringify({
+    kits: data.kits, surgeons: data.surgeons,
+    surgeries: data.surgeries, consignments: data.consignments
+  }));
+  data.changelog.unshift({ id:'cl'+Date.now(), timestamp:new Date().toISOString(), user:currentUser, action, detail, snapshot });
+  if (data.changelog.length > 30) data.changelog = data.changelog.slice(0, 30);
+}
+
+function renderChangelog() {
+  const cl = data.changelog || [];
+  const countEl = document.getElementById('clCount');
+  if (countEl) countEl.textContent = cl.length ? `${cl.length} change${cl.length!==1?'s':''} recorded (last 30 kept)` : '';
+  const tbody = document.getElementById('clBody');
+  if (!tbody) return;
+  if (!cl.length) {
+    tbody.innerHTML = `<tr><td colspan="5" class="cl-empty">No changes recorded yet. Changes will appear here as you add, edit or delete data.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = cl.map((e,i) => {
+    const dt = new Date(e.timestamp);
+    const timeStr = dt.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'2-digit'}) + ' ' +
+                    dt.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+    return `<tr>
+      <td class="cl-time">${timeStr}</td>
+      <td class="cl-action">${e.action}</td>
+      <td class="cl-detail">${e.detail||'—'}</td>
+      <td class="cl-user">${e.user||'—'}</td>
+      <td><button class="btn btn-sm" data-revert="${i}">Revert</button></td>
+    </tr>`;
+  }).join('');
+  tbody.querySelectorAll('[data-revert]').forEach(btn =>
+    btn.addEventListener('click', () => revertToSnapshot(+btn.dataset.revert))
+  );
+}
+
+function revertToSnapshot(idx) {
+  const entry = (data.changelog||[])[idx];
+  if (!entry) return;
+  const dt = new Date(entry.timestamp);
+  const timeStr = dt.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'2-digit'}) +
+                  ' at ' + dt.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+  if (!confirm(`Revert all data to the state as of ${timeStr}?\n\nChanges made after this point will be undone. A new history entry will record the revert.`)) return;
+  const snap = entry.snapshot;
+  data.kits         = JSON.parse(JSON.stringify(snap.kits||[]));
+  data.surgeons     = JSON.parse(JSON.stringify(snap.surgeons||[]));
+  data.surgeries    = JSON.parse(JSON.stringify(snap.surgeries||[]));
+  data.consignments = JSON.parse(JSON.stringify(snap.consignments||[]));
+  recordChange('Reverted', `Restored to ${timeStr} (was saved by ${entry.user||'unknown'})`);
+  renderTimeline();
+  renderChangelog();
+  autoSave();
+  setStatus('ok','Reverted ✓');
+}
 
 // ═══════════════════════════════════════════════════
 // DATE / LOGIC HELPERS
@@ -924,12 +1021,15 @@ function renderSurgeonsList() {
     sg.hospitals=hosps?hosps.split(',').map(h=>h.trim()).filter(Boolean):[];
     data.surgeries.forEach(s=>{if(s.surgeon===oldName)s.surgeon=name;});
     data.consignments.forEach(c=>{if(c.surgeonName===oldName)c.surgeonName=name;});
+    recordChange('Edited surgeon',name);
     autoSave();
     renderSurgeonsList();renderTimeline();
   }));
   document.querySelectorAll('[data-del-sg]').forEach(btn=>btn.addEventListener('click',async()=>{
     if(!confirm('Remove this surgeon?'))return;
+    const delSg=data.surgeons.find(x=>x.id===btn.dataset.delSg);
     data.surgeons=data.surgeons.filter(x=>x.id!==btn.dataset.delSg);
+    recordChange('Removed surgeon',delSg?.name||'');
     autoSave();
     renderSurgeonsList();renderTimeline();
   }));
@@ -949,7 +1049,7 @@ function renderKitsList() {
 
   document.querySelectorAll('[data-toggle]').forEach(btn=>btn.addEventListener('click',async()=>{
     const k=data.kits.find(x=>x.id===btn.dataset.toggle);
-    if(k){k.active=!k.active;await saveKit(k);renderKitsList();renderTimeline();}
+    if(k){k.active=!k.active;recordChange(k.active?'Activated kit':'Deactivated kit',k.name);await saveKit(k);renderKitsList();renderTimeline();}
   }));
   document.querySelectorAll('[data-consign-open]').forEach(btn=>btn.addEventListener('click',()=>{
     const panel=document.getElementById('consign-panel-'+btn.dataset.consignOpen);
@@ -1008,13 +1108,17 @@ function wireConsignmentPanels() {
     if(!permanent&&!startDate){alert('Enter a start date or tick Permanent.');return;}
     if(!data.consignments)data.consignments=[];
     data.consignments.push({id:'c'+Date.now(),kitId:kid,surgeonName,permanent,startDate:permanent?null:startDate,endDate:permanent?null:endDate||null});
+    const ckit=data.kits.find(x=>x.id===kid);
+    recordChange('Added consignment',`${surgeonName} — ${ckit?.name||kid}`);
     autoSave();renderKitsList();renderTimeline();
     const panel=document.getElementById('consign-panel-'+kid);
     if(panel)panel.style.display='block';
   }));
   document.querySelectorAll('[data-del-consign]').forEach(btn=>btn.addEventListener('click',async()=>{
     if(!confirm('Remove this consignment?'))return;
+    const dc=(data.consignments||[]).find(c=>c.id===btn.dataset.delConsign);
     data.consignments=(data.consignments||[]).filter(c=>c.id!==btn.dataset.delConsign);
+    if(dc){const dck=data.kits.find(x=>x.id===dc.kitId);recordChange('Removed consignment',`${dc.surgeonName} — ${dck?.name||dc.kitId}`);}
     autoSave();renderKitsList();renderTimeline();
   }));
 }
@@ -1023,6 +1127,19 @@ function wireConsignmentPanels() {
 // WIRE EVENTS
 // ═══════════════════════════════════════════════════
 function wireEvents() {
+  document.getElementById('tabTimeline').addEventListener('click',()=>{
+    document.getElementById('panelTimeline').style.display='';
+    document.getElementById('panelHistory').style.display='none';
+    document.getElementById('tabTimeline').classList.add('active');
+    document.getElementById('tabHistory').classList.remove('active');
+  });
+  document.getElementById('tabHistory').addEventListener('click',()=>{
+    document.getElementById('panelTimeline').style.display='none';
+    document.getElementById('panelHistory').style.display='';
+    document.getElementById('tabTimeline').classList.remove('active');
+    document.getElementById('tabHistory').classList.add('active');
+    renderChangelog();
+  });
   document.getElementById('prevMonth').addEventListener('click',()=>{viewStart=addDays(viewStart,-viewDays);renderTimeline();});
   document.getElementById('nextMonth').addEventListener('click',()=>{viewStart=addDays(viewStart,viewDays);renderTimeline();});
   document.getElementById('btnToday').addEventListener('click',()=>{viewStart=today();renderTimeline();});
@@ -1036,6 +1153,7 @@ function wireEvents() {
       if(saved.surgeons?.length) data.surgeons     =saved.surgeons;
       if(saved.surgeries)        data.surgeries    =saved.surgeries;
       if(saved.consignments)     data.consignments =saved.consignments;
+      if(saved.changelog)        data.changelog    =saved.changelog;
       renderTimeline();
       setStatus('ok','Refreshed ✓');
     } else if(saved!==null){
@@ -1057,6 +1175,7 @@ function wireEvents() {
       if(saved.surgeons?.length) data.surgeons     =saved.surgeons;
       if(saved.surgeries)        data.surgeries    =saved.surgeries;
       if(saved.consignments)     data.consignments =saved.consignments;
+      if(saved.changelog)        data.changelog    =saved.changelog;
       renderTimeline();
       setStatus('ok','Refreshed ✓');
     }
@@ -1099,9 +1218,11 @@ function wireEvents() {
     if(editingId){
       s=data.surgeries.find(x=>x.id===editingId);
       Object.assign(s,{date,surgeon,hospital,kitId,notes,outboundDays,returnDays,processingDays});
+      recordChange('Edited surgery',`${surgeon} at ${hospital} on ${fmtDate(date)}`);
     } else {
       s={id:'s'+Date.now(),date,surgeon,hospital,kitId,notes,status:'scheduled',outboundDays,returnDays,processingDays};
       data.surgeries.push(s);
+      recordChange('Added surgery',`${surgeon} at ${hospital} on ${fmtDate(date)}`);
     }
     document.getElementById('surgModal').style.display='none';
     // If surgery date is outside the current window, scroll to show it
@@ -1115,6 +1236,7 @@ function wireEvents() {
     const s=data.surgeries.find(x=>x.id===editingId);
     document.getElementById('surgModal').style.display='none';
     data.surgeries=data.surgeries.filter(x=>x.id!==editingId);
+    recordChange('Deleted surgery',`${s.surgeon} at ${s.hospital} on ${fmtDate(s.date)}`);
     renderTimeline();
     await deleteSurgery(s);
   });
@@ -1128,6 +1250,7 @@ function wireEvents() {
     if(!name){alert('Surgeon name required.');return;}
     const sg={id:'sg'+Date.now(),name,hospitals:hosps?hosps.split(',').map(h=>h.trim()).filter(Boolean):[]};
     data.surgeons.push(sg);
+    recordChange('Added surgeon',name);
     document.getElementById('fNewSurgeon').value='';document.getElementById('fNewHospitals').value='';
     renderSurgeonsList();renderTimeline();
     await saveSurgeon(sg);
@@ -1141,6 +1264,7 @@ function wireEvents() {
     if(!name){alert('Kit name required.');return;}
     const k={id:'k'+Date.now(),name,color:KIT_COLORS[data.kits.length%KIT_COLORS.length],active:true};
     data.kits.push(k);
+    recordChange('Added kit',name);
     document.getElementById('fNewKit').value='';
     renderKitsList();renderTimeline();
     await saveKit(k);
@@ -1176,6 +1300,7 @@ function showSignIn(errMsg) {
 }
 
 function launchMainApp(accountName) {
+  currentUser=accountName;
   document.getElementById('userDisplay').textContent=accountName;
   document.getElementById('authScreen').style.display='none';
   document.getElementById('mainApp').style.display='grid';
