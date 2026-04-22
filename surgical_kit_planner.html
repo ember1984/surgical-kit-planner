@@ -508,6 +508,50 @@ async function getDriveId() {
   return null;
 }
 
+function csvEscape(val) {
+  const s = String(val ?? '');
+  return (s.includes(',') || s.includes('"') || s.includes('\n'))
+    ? '"' + s.replace(/"/g, '""') + '"'
+    : s;
+}
+
+const ACCESS_LOG_FILE = 'surgical_kit_access_log.csv';
+
+async function logAccess(event) {
+  const did = await getDriveId();
+  if (!did) return;
+  const tok = await getToken();
+  if (!tok) return;
+
+  const account = msal.getAllAccounts()[0];
+  const name    = account?.name     || currentUser || '';
+  const email   = account?.username || '';
+  const ts      = new Date().toISOString();
+  const newRow  = [ts, name, email, event].map(csvEscape).join(',') + '\n';
+
+  const HEADER = 'Timestamp,User,Email,Event\n';
+  let existing = HEADER;
+
+  try {
+    const r = await fetch(
+      `https://graph.microsoft.com/v1.0/drives/${did}/root:/${ACCESS_LOG_FILE}:/content`,
+      { headers: { Authorization: `Bearer ${tok}` } }
+    );
+    if (r.ok) existing = await r.text();
+  } catch(e) { return; }
+
+  try {
+    await fetch(
+      `https://graph.microsoft.com/v1.0/drives/${did}/root:/${ACCESS_LOG_FILE}:/content`,
+      {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'text/csv' },
+        body: existing + newRow
+      }
+    );
+  } catch(e) {}
+}
+
 async function loadDataFile() {
   const did = await getDriveId();
   if (!did) return null;
@@ -655,6 +699,7 @@ async function loadFromSP() {
   if (saved.changelog)         data.changelog    = saved.changelog;    else data.changelog = [];
   setStatus('ok', 'Loaded ✓');
   startPolling();
+  logAccess('login').catch(() => {});
 }
 
 // ═══════════════════════════════════════════════════
