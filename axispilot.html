@@ -170,6 +170,7 @@ tbody tr:hover td{background:var(--surface2)}
     <button onclick="showTab('orders')">Orders</button>
     <button onclick="showTab('recommended')">Recommended Orders</button>
     <button onclick="showTab('financials')">Financials</button>
+    <button onclick="showTab('changelog')">Change Log</button>
   </nav>
   <div class="header-actions">
     <span class="status-dot" id="statusDot"></span>
@@ -247,15 +248,15 @@ tbody tr:hover td{background:var(--surface2)}
         <div class="fld" style="margin:0">
           <label style="display:inline;margin-right:8px">Start Date</label>
           <input type="date" id="prob-date-start" style="width:160px;display:inline-block"
-            onchange="S.probDateStart=this.value;_updateProbDateLabel();saveState()">
+            onchange="S.probDateStart=this.value;_updateProbDateLabel();saveState('Updated probability date range')">
         </div>
         <span style="font-size:1.1rem;color:var(--muted);margin-top:18px">→</span>
         <div class="fld" style="margin:0">
           <label style="display:inline;margin-right:8px">End Date</label>
           <input type="date" id="prob-date-end" style="width:160px;display:inline-block"
-            onchange="S.probDateEnd=this.value;_updateProbDateLabel();saveState()">
+            onchange="S.probDateEnd=this.value;_updateProbDateLabel();saveState('Updated probability date range')">
         </div>
-        <button class="btn ghost sm" style="margin-top:18px" onclick="S.probDateStart='';S.probDateEnd='';document.getElementById('prob-date-start').value='';document.getElementById('prob-date-end').value='';_updateProbDateLabel();saveState()">Clear</button>
+        <button class="btn ghost sm" style="margin-top:18px" onclick="S.probDateStart='';S.probDateEnd='';document.getElementById('prob-date-start').value='';document.getElementById('prob-date-end').value='';_updateProbDateLabel();saveState('Cleared probability date range')">Clear</button>
       </div>
     </div>
   </div>
@@ -539,12 +540,12 @@ tbody tr:hover td{background:var(--surface2)}
         <div class="fld" style="margin:0">
           <label>1 GBP = € EUR</label>
           <input type="number" id="rate-eur" min="0.0001" step="0.0001" style="width:110px" placeholder="1.18"
-            oninput="S.rates.EUR=parseFloat(this.value)||1.18;renderPricing();saveState()">
+            oninput="S.rates.EUR=parseFloat(this.value)||1.18;renderPricing();saveState('Updated EUR exchange rate')">
         </div>
         <div class="fld" style="margin:0">
           <label>1 GBP = $ USD</label>
           <input type="number" id="rate-usd" min="0.0001" step="0.0001" style="width:110px" placeholder="1.27"
-            oninput="S.rates.USD=parseFloat(this.value)||1.27;renderPricing();saveState()">
+            oninput="S.rates.USD=parseFloat(this.value)||1.27;renderPricing();saveState('Updated USD exchange rate')">
         </div>
       </div>
     </div>
@@ -732,6 +733,28 @@ tbody tr:hover td{background:var(--surface2)}
   </div>
 </div>
 
+<div id="tab-changelog" class="tab">
+  <div class="page-title" style="display:flex;align-items:center;gap:16px">
+    <span>Change Log <span style="font-size:.75rem;font-weight:400;color:var(--muted)">Auto-saved snapshots — revert to any previous state</span></span>
+    <span id="cl-count" style="font-size:.75rem;color:var(--muted)"></span>
+  </div>
+  <div class="card">
+    <div class="card-body" style="padding:0">
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr>
+            <th style="width:160px">Saved at</th>
+            <th style="width:160px">User</th>
+            <th>Change</th>
+            <th style="width:90px"></th>
+          </tr></thead>
+          <tbody id="changelog-tbody"><tr><td colspan="4" style="text-align:center;color:var(--muted);padding:24px">No history yet — changes will appear here after the first save.</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
 </main>
 </div><!-- /#mainApp -->
 
@@ -748,7 +771,7 @@ const REDIRECT    = 'https://ember1984.github.io/surgical-kit-planner/axispilot.
 const SCOPES      = ['https://graph.microsoft.com/Sites.Selected','https://graph.microsoft.com/User.Read'];
 const _msalCfg    = {auth:{clientId:CLIENT_ID,authority:`https://login.microsoftonline.com/${TENANT_ID}`,redirectUri:REDIRECT},cache:{cacheLocation:'sessionStorage',storeAuthStateInCookie:true}};
 const _msal       = new window.msal.PublicClientApplication(_msalCfg);
-let _driveId=null, _saveTimer=null, _pollTimer=null, _lastModified=null, _spReady=false;
+let _driveId=null, _saveTimer=null, _pollTimer=null, _lastModified=null, _spReady=false, _nextSaveAction='';
 
 // ══════════════════════════════════════════════════════════
 // STATE
@@ -878,6 +901,7 @@ function migrateState(){
   if(!S.recommendedSchedule) S.recommendedSchedule=[];
   if(!S.probDateStart) S.probDateStart='';
   if(!S.probDateEnd)   S.probDateEnd='';
+  if(!S.changelog)     S.changelog=[];
   if(!S.rates.EUR) S.rates.EUR=1.18;
   if(!S.rates.USD) S.rates.USD=1.27;
   // Normalise order dates to YYYY-MM-DD so new Date() parses correctly
@@ -926,7 +950,7 @@ function onFileLoad(e){
       S=JSON.parse(ev.target.result);
       migrateState();
       renderAll();
-      saveState();
+      saveState(`Imported data file: ${file.name}`);
       alert('Data loaded: '+file.name);
     }catch(err){ alert('Could not read file: '+err.message); }
   };
@@ -1173,7 +1197,7 @@ function importCSV(type, e){
         });
       }
       renderAll();
-      saveState();
+      saveState(`Imported CSV: ${type} (${rows.length} rows)`);
       alert(`Imported ${rows.length} row(s) into ${type}.`);
     }catch(err){ alert('Import error: '+err.message); }
   };
@@ -1188,7 +1212,7 @@ function showTab(name){
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
   document.getElementById('tab-'+name).classList.add('active');
-  const idx=['dashboard','products','pricing','forecast','sets','stock','projection','orders','recommended','financials'].indexOf(name);
+  const idx=['dashboard','products','pricing','forecast','sets','stock','projection','orders','recommended','financials','changelog'].indexOf(name);
   document.querySelectorAll('nav button')[idx].classList.add('active');
   renderAll();
   if(name==='projection') setTimeout(scrollTimelineToToday,60);
@@ -1214,7 +1238,7 @@ function saveProduct(){
   };
   if(id){ const i=S.products.findIndex(p=>p.id===id); S.products[i]=prod; }
   else S.products.push(prod);
-  cancelProductEdit(); renderAll(); saveState();
+  cancelProductEdit(); renderAll(); saveState(id?`Edited product: ${prod.code}`:`Added product: ${prod.code}`);
 }
 function cancelProductEdit(){
   ['pf-code','pf-desc','pf-type','pf-drawing','pf-prob','pf-lead','pf-reorderqty'].forEach(i=>document.getElementById(i).value='');
@@ -1236,8 +1260,9 @@ function editProduct(id){
 }
 function deleteProduct(id){
   if(!confirm('Delete this product?')) return;
+  const code=(S.products.find(p=>p.id===id)||{}).code||id;
   S.products=S.products.filter(p=>p.id!==id);
-  renderAll(); saveState();
+  renderAll(); saveState(`Deleted product: ${code}`);
 }
 function getTypes(){
   return [...new Set(S.products.map(p=>p.type||'').filter(Boolean))].sort();
@@ -1253,7 +1278,7 @@ function populateTypeFilters(){
 function toggleSuppressed(id){
   const p=S.products.find(x=>x.id===id); if(!p) return;
   p.suppressed=!p.suppressed;
-  renderAll(); saveState();
+  renderAll(); saveState(p.suppressed?`Suppressed product: ${p.code}`:`Activated product: ${p.code}`);
 }
 function activeProducts(){ return S.products.filter(p=>!p.suppressed); }
 function renderProducts(){
@@ -1441,7 +1466,7 @@ function renderStockTable(){
 function saveStockLevels(){
   S.products.forEach(p=>{ const el=document.getElementById('st-'+p.id); if(el) p.stock=parseFloat(el.value)||0; });
   renderStockTimeline(); renderDashboard();
-  saveState();
+  saveState('Updated stock levels');
   alert('Stock levels saved.');
 }
 
@@ -1956,7 +1981,7 @@ function editPricingRule(ruleId){
 function deletePricingRule(ruleId){
   if(!confirm('Delete this pricing rule?')) return;
   S.pricingRules=(S.pricingRules||[]).filter(r=>r.id!==ruleId);
-  renderPricing(); saveState();
+  renderPricing(); saveState('Deleted pricing rule');
 }
 function addPriceTier(){
   priceTiersEdit.push({minQty:'',unitPrice:0});
@@ -2016,7 +2041,7 @@ function savePriceTiers(){
     if(p&&sorted[0]) p.cost=sorted[0].unitPrice/rate;
   }
   renderPricing(); renderPriceTiersEdit();
-  saveState();
+  saveState('Saved pricing rule');
   alert('Price rule saved.');
 }
 
@@ -2206,7 +2231,7 @@ function setDeliveredQty(orderId, lineIdx, newQty){
   if (allDone && !o.receivedDate) o.receivedDate = new Date().toISOString().slice(0, 10);
   if (!allDone) delete o.receivedDate;
   _expandedOrders.add(orderId);
-  renderAll(); saveState();
+  renderAll(); saveState('Updated delivery quantities');
 }
 
 function setLineField(orderId, lineIdx, field, val){
@@ -2214,12 +2239,12 @@ function setLineField(orderId, lineIdx, field, val){
   if (!o || !o.lines[lineIdx]) return;
   o.lines[lineIdx][field] = Math.max(0, parseInt(val) || 0);
   _expandedOrders.add(orderId);
-  renderAll(); saveState();
+  renderAll(); saveState('Updated line QC quantities');
 }
 
 function setLineDeliveryDate(orderId, lineIdx, date){
   const o = S.orders.find(x => x.id === orderId);
-  if (o && o.lines[lineIdx]){ o.lines[lineIdx].deliveryDate = date; saveState(); }
+  if (o && o.lines[lineIdx]){ o.lines[lineIdx].deliveryDate = date; saveState('Updated line delivery date'); }
 }
 
 function _fxSymbol(cur){ return cur==='EUR'?'€':cur==='USD'?'$':cur==='GBP'?'£':(cur?cur+'\u00a0':''); }
@@ -2322,7 +2347,7 @@ function saveOrder(){
   };
   if(id){ const i=S.orders.findIndex(o=>o.id===id); S.orders[i]=order; }
   else S.orders.push(order);
-  cancelOrderEdit(); renderAll(); saveState();
+  cancelOrderEdit(); renderAll(); saveState(id?`Edited order: ${no}`:`Created order: ${no}`);
 }
 function cancelOrderEdit(){
   ['of-no','of-date','of-delivery','of-supplier','of-notes'].forEach(i=>document.getElementById(i).value='');
@@ -2356,17 +2381,18 @@ function markReceived(id){
     const remaining = l.qty - alreadyReceived;
     l.deliveredQty = l.qty;
   });
-  renderAll(); saveState();
+  renderAll(); saveState(`Marked received: ${o.no}`);
 }
 function cancelOrder(id){
   const o=S.orders.find(x=>x.id===id); if(!o) return;
   if(!confirm('Cancel this order?')) return;
-  o.status='Cancelled'; renderAll(); saveState();
+  o.status='Cancelled'; renderAll(); saveState(`Cancelled order: ${o.no}`);
 }
 function deleteOrder(id){
   if(!confirm('Permanently delete this order?')) return;
+  const no=(S.orders.find(o=>o.id===id)||{}).no||id;
   S.orders=S.orders.filter(o=>o.id!==id);
-  renderAll(); saveState();
+  renderAll(); saveState(`Deleted order: ${no}`);
 }
 let _expandedOrders = new Set();
 function toggleOrderExpand(id){ _expandedOrders.has(id)?_expandedOrders.delete(id):_expandedOrders.add(id); renderOrders(); }
@@ -2608,7 +2634,7 @@ function saveSetConfig(){
   if(!S.setsPlanned) S.setsPlanned={};
   if(id){ const i=S.sets.findIndex(s=>s.id===id); S.sets[i]=cfg; }
   else{ S.sets.push(cfg); S.setsPlanned[cfg.id]={}; }
-  cancelSetEdit(); renderAll(); saveState();
+  cancelSetEdit(); renderAll(); saveState(id?`Edited set: ${name}`:`Added set: ${name}`);
 }
 
 function cancelSetEdit(){
@@ -2633,9 +2659,10 @@ function editSetConfig(id){
 
 function deleteSetConfig(id){
   if(!confirm('Delete this set configuration?')) return;
+  const name=(S.sets||[]).find(s=>s.id===id)?.name||id;
   S.sets=(S.sets||[]).filter(s=>s.id!==id);
   if(S.setsPlanned) delete S.setsPlanned[id];
-  renderAll(); saveState();
+  renderAll(); saveState(`Deleted set: ${name}`);
 }
 
 function renderSetConfigsList(){
@@ -2672,7 +2699,7 @@ function renderSetsMonthlyGrid(){
           <div class="fld">
             <label>${m.label}</label>
             <input type="number" min="0" value="${(S.setsPlanned[s.id]||{})[m.key]||''}" placeholder="0"
-              onchange="if(!S.setsPlanned)S.setsPlanned={};if(!S.setsPlanned['${s.id}'])S.setsPlanned['${s.id}']={};S.setsPlanned['${s.id}']['${m.key}']=parseInt(this.value)||0;renderSetsTimelines();renderStockTimeline();saveState();">
+              onchange="if(!S.setsPlanned)S.setsPlanned={};if(!S.setsPlanned['${s.id}'])S.setsPlanned['${s.id}']={};S.setsPlanned['${s.id}']['${m.key}']=parseInt(this.value)||0;renderSetsTimelines();renderStockTimeline();saveState('Updated planned sets');">
           </div>
         `).join('')}
       </div>
@@ -2874,7 +2901,7 @@ function _syncScheduleToState(){
       drawingPriced: !!l.drawingPriced
     }))
   }));
-  saveState();
+  saveState('Saved recommended schedule');
 }
 function _loadScheduleFromState(){
   if (!S.recommendedSchedule || !S.recommendedSchedule.length) return false;
@@ -3672,21 +3699,45 @@ async function _getDriveId(){
     const j=await r.json(); _driveId=j.id; return _driveId;
   }catch(e){ return null; }
 }
-function saveState(){
+function saveState(action){
   if(!_spReady) return;
+  if(action) _nextSaveAction=action;
   clearTimeout(_saveTimer);
   _saveTimer=setTimeout(async()=>{
     _saveTimer=null;
+    const act=_nextSaveAction||'Data updated';
+    _nextSaveAction='';
     const did=await _getDriveId(); if(!did) return;
     _showSaving(true);
     try{
       const tok=await _getToken();
+      // Build changelog entry + snapshot
+      const snapId='snap_'+Date.now();
+      const acct=_msal.getAllAccounts()[0];
+      const user=acct?.name||acct?.username||'Unknown';
+      const entry={id:snapId,ts:new Date().toISOString(),user,action:act};
+      const snapData=JSON.parse(JSON.stringify(S));
+      delete snapData.changelog;  // don't nest changelogs
+      // Update changelog in S before saving main file
+      if(!S.changelog) S.changelog=[];
+      S.changelog.unshift(entry);
+      const pruned=S.changelog.length>30?S.changelog.splice(30):[];
+      // Save main file
       const r=await fetch(`https://graph.microsoft.com/v1.0/drives/${did}/root:/${DATA_FILE}:/content`,
         {method:'PUT',headers:{Authorization:`Bearer ${tok}`,'Content-Type':'application/json'},body:JSON.stringify(S)});
       _showSaving(false);
       if(!r.ok){ setStatus('err',`Save failed (${r.status})`); return; }
       try{const m=await r.json();_lastModified=m.lastModifiedDateTime||m.eTag||null;}catch(x){}
       setStatus('ok','Synced ✓');
+      // Save snapshot file (fire & forget)
+      fetch(`https://graph.microsoft.com/v1.0/drives/${did}/root:/${snapId}.json:/content`,
+        {method:'PUT',headers:{Authorization:`Bearer ${tok}`,'Content-Type':'application/json'},body:JSON.stringify(snapData)}).catch(()=>{});
+      // Prune old snapshot files (fire & forget)
+      pruned.forEach(old=>{
+        fetch(`https://graph.microsoft.com/v1.0/drives/${did}/root:/${old.id}.json`,
+          {method:'DELETE',headers:{Authorization:`Bearer ${tok}`}}).catch(()=>{});
+      });
+      renderChangelog();
     }catch(e){ _showSaving(false); setStatus('err',`Save error: ${e.message}`); }
   },1000);
 }
@@ -3802,6 +3853,57 @@ function _updateProbDateLabel(){
   }
 }
 
+// ══════════════════════════════════════════════════════════
+// CHANGELOG
+// ══════════════════════════════════════════════════════════
+function renderChangelog(){
+  const el=document.getElementById('changelog-tbody');
+  const ct=document.getElementById('cl-count');
+  if(!el) return;
+  const entries=(S.changelog||[]);
+  if(ct) ct.textContent=entries.length?`${entries.length} of 30 snapshots stored`:'';
+  if(!entries.length){
+    el.innerHTML='<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:24px">No history yet — changes will appear here after the first save.</td></tr>';
+    return;
+  }
+  el.innerHTML=entries.map((e,i)=>{
+    const ts=new Date(e.ts).toLocaleString('en-GB',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
+    const isCurrent=i===0;
+    return `<tr style="${isCurrent?'background:var(--accent-light)':''}">
+      <td style="font-size:.82rem;white-space:nowrap">${ts}</td>
+      <td style="font-size:.82rem">${e.user||'—'}</td>
+      <td style="font-size:.82rem">${e.action||'—'}${isCurrent?' <span style="font-size:.7rem;color:var(--green);font-weight:600"> ← current</span>':''}</td>
+      <td style="text-align:center">${isCurrent
+        ?'<span style="font-size:.72rem;color:var(--muted)">current</span>'
+        :`<button class="btn ghost sm" onclick="revertTo('${e.id}')" title="Restore this snapshot">↩ Revert</button>`
+      }</td>
+    </tr>`;
+  }).join('');
+}
+
+async function revertTo(snapId){
+  const entry=(S.changelog||[]).find(e=>e.id===snapId);
+  const when=entry?new Date(entry.ts).toLocaleString('en-GB',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}):'this point';
+  if(!confirm(`Revert to snapshot from ${when}?\n\nAll changes made after this point will be undone.`)) return;
+  setStatus('spin','Reverting…');
+  const did=await _getDriveId(); if(!did){ setStatus('err','Cannot reach SharePoint'); return; }
+  const tok=await _getToken(); if(!tok){ setStatus('err','Not signed in'); return; }
+  try{
+    const r=await fetch(`https://graph.microsoft.com/v1.0/drives/${did}/root:/${snapId}.json:/content`,
+      {headers:{Authorization:`Bearer ${tok}`}});
+    if(r.status===404){ setStatus('err','Snapshot not found'); alert('This snapshot could not be found — it may have been pruned when the 30-entry limit was reached.'); return; }
+    if(!r.ok){ setStatus('err',`Revert failed (${r.status})`); return; }
+    const snap=await r.json();
+    const cl=S.changelog;   // preserve current changelog
+    S=snap;
+    S.changelog=cl;
+    migrateState();
+    renderAll();
+    saveState(`Reverted to ${when}`);
+    setStatus('ok','Reverted ✓');
+  }catch(e){ setStatus('err',`Revert error: ${e.message}`); }
+}
+
 function renderAll(){
   renderProducts();
   renderPricingProductSelect();
@@ -3819,6 +3921,7 @@ function renderAll(){
   renderDashboard();
   _renderSchedule();   // re-render only; use Refresh button to recalculate
   renderFinancials();
+  renderChangelog();
   _updateProbDateLabel();
   if(!orderLines.length) orderLines=[{productId:'',qty:1,cost:0}];
   renderOrderLines();
