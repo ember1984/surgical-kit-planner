@@ -3046,7 +3046,7 @@ function calcOrderSchedule(){
       const sup = supplierOverride || undefined;
       const _rule = sup
         ? (_findRule(l.product.id, sup) || null)
-        : (_findRule(l.product.id, '') || _findBestRule(l.product.id, l.qty));
+        : (_findRule(l.product.id, '') || _findBestRule(l.product.id, l.qty, linesForPricing));
       l.ruleSupplier = sup || _rule?.supplier || '';
       l.ruleCurrency = _rule?.currency || 'GBP';
       l.unitCost = getPricedCost(l.product.id, l.qty, sup, linesForPricing);
