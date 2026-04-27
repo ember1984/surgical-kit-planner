@@ -3043,7 +3043,19 @@ function calcOrderSchedule(){
       l.ruleCurrency = _rule?.currency || 'GBP';
       l.unitCost = getPricedCost(l.product.id, l.qty, sup, linesForPricing);
       l.lineCost = l.qty * l.unitCost;
-      l.foreignPrice = (_rule && l.ruleCurrency !== 'GBP') ? _applyTiers(_rule.tiers, l.qty) : null;
+      if (_rule && l.ruleCurrency !== 'GBP') {
+        let fxQty = l.qty;
+        if (_rule.model === 'drawing' && l.product.drawing) {
+          const combined = linesForPricing.reduce((s, ol) => {
+            const op = S.products.find(x => x.id === ol.productId);
+            return (op?.drawing === l.product.drawing) ? s + (ol.qty || 0) : s;
+          }, 0);
+          if (combined > 0) fxQty = combined;
+        }
+        l.foreignPrice = _applyTiers(_rule.tiers, fxQty);
+      } else {
+        l.foreignPrice = null;
+      }
       // Flag when a drawing-model rule is driving the price (combined qty pricing)
       l.drawingPriced = (_rule?.model === 'drawing');
     });
@@ -3095,9 +3107,22 @@ function _recalcLine(dateIdx, lineIdx, newSupplier){
     : (_findRule(l.product.id, '') || _findBestRule(l.product.id, qty));
   l.ruleSupplier = sup || rule?.supplier || '';
   l.ruleCurrency = rule?.currency || 'GBP';
-  l.foreignPrice = (rule && l.ruleCurrency !== 'GBP') ? _applyTiers(rule.tiers, qty) : null;
-  l.unitCost = getPricedCost(l.product.id, qty, sup || undefined);
+  const linesForPricing = ev.lines.map(x => ({ productId: x.product.id, qty: x.qty }));
+  l.unitCost = getPricedCost(l.product.id, qty, sup || undefined, linesForPricing);
   l.lineCost = qty * l.unitCost;
+  if (rule && l.ruleCurrency !== 'GBP') {
+    let fxQty = qty;
+    if (rule.model === 'drawing' && l.product.drawing) {
+      const combined = linesForPricing.reduce((s, ol) => {
+        const op = S.products.find(x => x.id === ol.productId);
+        return (op?.drawing === l.product.drawing) ? s + (ol.qty || 0) : s;
+      }, 0);
+      if (combined > 0) fxQty = combined;
+    }
+    l.foreignPrice = _applyTiers(rule.tiers, fxQty);
+  } else {
+    l.foreignPrice = null;
+  }
   l.drawingPriced = (rule?.model === 'drawing');
   _syncScheduleToState();
   _renderSchedule();
