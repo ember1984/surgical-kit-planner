@@ -3012,8 +3012,9 @@ function calcOrderSchedule(){
         maxMin = Math.max(maxMin, Math.ceil(minStockMap[p.id]?.[months[j].key] || 0));
       }
 
-      // Skip if probability-weighted demand doesn't meet the minimum threshold
-      if (rawCoverDemand < minDemandThreshold) return;
+      // Skip if demand is below threshold AND stock at delivery already covers the min requirement
+      const stockShortfall = Math.max(0, maxMin - Math.max(0, stockAtDelivery));
+      if (rawCoverDemand < minDemandThreshold && stockShortfall <= 0) return;
 
       const coverDemand = Math.ceil(rawCoverDemand);   // single ceil at end
 
