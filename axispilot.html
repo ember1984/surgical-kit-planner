@@ -1880,9 +1880,10 @@ function getEffectiveMOQ(productId, supplier){
   return isFinite(minQty) ? minQty : (p?.moq || 1);
 }
 
-function _findBestRule(productId, qty){
+function _findBestRule(productId, qty, orderLines){
   // When no supplier is given and no supplier='' fallback rule exists,
   // return the rule giving the lowest GBP unit price at qty across all suppliers.
+  // For drawing-model rules, uses combined qty of all same-drawing products in orderLines.
   const p=S.products.find(x=>x.id===productId);
   const rules=S.pricingRules||[];
   const candidates=[
@@ -1893,10 +1894,17 @@ function _findBestRule(productId, qty){
   let bestRule=null, bestGbp=Infinity;
   for(const r of candidates){
     if(!r.tiers||!r.tiers.length) continue;
-    // Only consider this rule if the qty meets the rule's minimum tier
+    let effectiveQty=qty;
+    if(r.model==='drawing'&&p?.drawing&&orderLines?.length){
+      const combined=orderLines.reduce((sum,l)=>{
+        const lp=S.products.find(x=>x.id===l.productId);
+        return (lp&&lp.drawing===p.drawing)?sum+(l.qty||0):sum;
+      },0);
+      if(combined>0) effectiveQty=combined;
+    }
     const firstTier=[...r.tiers].sort((a,b)=>a.minQty-b.minQty)[0];
-    if(qty < (firstTier?.minQty||0)) continue;
-    const fp=_applyTiers(r.tiers,qty);
+    if(effectiveQty < (firstTier?.minQty||0)) continue;
+    const fp=_applyTiers(r.tiers,effectiveQty);
     if(fp===null) continue;
     const rate=r.currency&&r.currency!=='GBP'?(S.rates?.[r.currency]||1):1;
     const gbp=fp/rate;
@@ -1911,7 +1919,7 @@ function getPricedCost(productId, qty, supplier, orderLines){
   orderLines=orderLines||[];
   const p=S.products.find(x=>x.id===productId);
   const rule=_findRule(productId, supplier)
-    || (!supplier ? _findBestRule(productId, qty) : null);
+    || (!supplier ? _findBestRule(productId, qty, orderLines) : null);
   if(!rule) return p?.cost||0;
   let effectiveQty=qty;
   if(rule.model==='drawing'&&p?.drawing&&orderLines.length){
