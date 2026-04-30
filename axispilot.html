@@ -688,7 +688,8 @@ tbody tr:hover td{background:var(--surface2)}
 <div id="tab-financials" class="tab">
   <div class="page-title" style="display:flex;align-items:center;justify-content:space-between">
     <span>Financials <span style="font-size:.75rem;font-weight:400;color:var(--muted)">Committed spend and forecast purchasing pipeline</span></span>
-    <button class="btn ghost sm" onclick="printFinancials()" title="Print financials report" style="margin-left:auto">🖨 Print</button>
+    <button class="btn ghost sm" onclick="exportFinancialsCSV()" title="Export forecast schedule as CSV" style="margin-left:auto">⬇ CSV</button>
+    <button class="btn ghost sm" onclick="printFinancials()" title="Print financials report">🖨 Print</button>
   </div>
 
   <div id="fin-stats-row" style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:20px"></div>
@@ -3572,6 +3573,33 @@ function printFinancials(){
   <script>window.onload=function(){window.print();}<\/script>
   </body></html>`);
   w.document.close();
+}
+
+function exportFinancialsCSV(){
+  const schedule = _lastSchedule.length ? _lastSchedule : calcOrderSchedule();
+  if(!schedule.length){ alert('No forecast schedule to export.'); return; }
+  const rows = schedule.map(ev=>{
+    const evTotal = ev.lines.reduce((s,l)=>s+l.lineCost,0);
+    const orderMonth = new Date(ev.orderDateStr+'T00:00:00').toLocaleString('en-GB',{month:'short',year:'numeric'});
+    const latestDelivery = ev.lines.reduce((latest,l)=>l.deliveryDateStr>latest?l.deliveryDateStr:latest,'');
+    const delivMonth = latestDelivery ? new Date(latestDelivery+'T00:00:00').toLocaleString('en-GB',{month:'short',year:'numeric'}) : '';
+    const suppliers = [...new Set(ev.lines.map(l=>l.ruleSupplier).filter(Boolean))].join(', ');
+    const t={};
+    ev.lines.forEach(l=>{const k=l.product?.type||'Other';t[k]=(t[k]||0)+(l.qty||0);});
+    const products = Object.entries(t).map(([k,q])=>`${k} ×${q}`).join(', ')||'—';
+    return {
+      'Order Month': orderMonth,
+      'Delivery Month': delivMonth,
+      'Supplier': suppliers,
+      'Products': products,
+      'Est Amount in GBP': evTotal.toFixed(2)
+    };
+  });
+  const blob = new Blob([toCSV(rows)],{type:'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `axispilot-financials-${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
 }
 
 function renderFinancials(){
