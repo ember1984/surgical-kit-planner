@@ -143,6 +143,8 @@ tbody tr:hover td{background:var(--surface2)}
 .status-dot.ok{background:var(--green)}.status-dot.err{background:var(--red)}.status-dot.spin{background:var(--amber);animation:sp 1s infinite}
 @keyframes sp{0%,100%{opacity:1}50%{opacity:.3}}
 #statusTxt{font-size:.72rem;color:var(--muted)}
+#toast{position:fixed;left:50%;bottom:24px;transform:translate(-50%,20px);background:var(--accent);color:#fff;padding:10px 18px;border-radius:var(--radius);font-size:.82rem;box-shadow:0 4px 14px rgba(0,0,0,.2);opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:10000;max-width:calc(100vw - 32px)}
+#toast.show{opacity:1;transform:translate(-50%,0)}
 #savingBadge{font-size:.72rem;color:var(--amber);background:#fff8f0;border:1px solid #f5deb3;border-radius:10px;padding:1px 8px}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
@@ -336,6 +338,7 @@ tbody tr:hover td{background:var(--surface2)}
             <th class="sortable" onclick="setSort('stock','desc')">Description</th>
             <th class="sortable" onclick="setSort('stock','type')">Type</th>
             <th class="sortable" onclick="setSort('stock','stock')">Current Stock</th>
+            <th title="Delivered on orders but not yet included in Current Stock — counted as available in the projection">Awaiting Stock</th>
             <th class="sortable" onclick="setSort('stock','reorderQty')">Reorder Qty</th>
             <th class="sortable" onclick="setSort('stock','leadDays')">Lead Time</th>
           </tr></thead>
@@ -717,7 +720,10 @@ tbody tr:hover td{background:var(--surface2)}
   </div>
 
   <div class="card">
-    <div class="card-head"><h3>Forecast Spend — Recommended Order Schedule</h3></div>
+    <div class="card-head"><h3>Forecast Spend — Recommended Order Schedule</h3>
+      <span style="font-size:.75rem;color:var(--muted)">Same schedule as the Recommended Orders tab</span>
+      <button class="btn ghost sm ml" onclick="renderRecommended();renderFinancials()" title="Recalculate the schedule from current stock, forecast and settings on the Recommended Orders tab">↻ Recalculate</button>
+    </div>
     <div class="card-body" style="padding:0">
       <div class="tbl-wrap">
         <table>
@@ -772,7 +778,8 @@ const REDIRECT    = 'https://ember1984.github.io/surgical-kit-planner/axispilot.
 const SCOPES      = ['https://graph.microsoft.com/Sites.Selected','https://graph.microsoft.com/User.Read'];
 const _msalCfg    = {auth:{clientId:CLIENT_ID,authority:`https://login.microsoftonline.com/${TENANT_ID}`,redirectUri:REDIRECT},cache:{cacheLocation:'sessionStorage',storeAuthStateInCookie:true}};
 const _msal       = new window.msal.PublicClientApplication(_msalCfg);
-let _driveId=null, _saveTimer=null, _pollTimer=null, _lastModified=null, _spReady=false, _nextSaveAction='';
+let _driveId=null, _saveTimer=null, _pollTimer=null, _eTag=null, _spReady=false, _nextSaveAction='';
+let _saving=false, _dirty=false;   // save in flight / local edits not yet saved
 
 // ══════════════════════════════════════════════════════════
 // STATE
@@ -799,11 +806,9 @@ const MONTHS = 61; // current month + 60 months ahead
 let timelineView = 'full'; // 'full' (Open/Used/Min/Close) | 'compact' (Close only)
 
 // Debounced search handlers — prevent re-rendering on every keystroke
-let _t1=null,_t2=null,_t3=null;
+let _t1=null,_t2=null;
 function dRenderProj(){clearTimeout(_t1);_t1=setTimeout(renderStockTimeline,180);}
 function dRenderProds(){clearTimeout(_t2);_t2=setTimeout(renderProducts,180);}
-function dRenderOrders(){clearTimeout(_t3);_t3=setTimeout(renderOrders,180);}
-
 // ── SORT STATE ──────────────────────────────────────────
 const sortState = {
   products: { col: 'code', dir: 1 },
@@ -857,6 +862,16 @@ function sortArr(arr, col, dir){
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,5); }
 
+// YYYY-MM-DD in the user's local timezone (toISOString() is UTC and gives yesterday during BST)
+function _localDateStr(d=new Date()){
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+// Escape user-entered text before putting it into generated HTML
+function esc(v){
+  return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
 function monthList(n){
   const m=[];
   const now=new Date();
@@ -894,6 +909,7 @@ function _normaliseDate(s){
 }
 
 function migrateState(){
+  _lastSchedule=[];   // S has been replaced; rebuild the cached schedule from S.recommendedSchedule
   // Ensure new arrays/objects always exist
   if(!S.sets) S.sets=[];
   if(!S.setsPlanned) S.setsPlanned={};
@@ -911,6 +927,11 @@ function migrateState(){
     if(o.dateOrdered)  o.dateOrdered  = _normaliseDate(o.dateOrdered);
     (o.lines||[]).forEach(l=>{ if(l.deliveryDate) l.deliveryDate = _normaliseDate(l.deliveryDate); });
   });
+  // stockedQty (added Sep 2026): units from a line that are now in Current Stock.
+  // Anything delivered before the field existed is assumed to be in stock already.
+  (S.orders||[]).forEach(o=>(o.lines||[]).forEach(l=>{
+    if(!l.manual&&l.stockedQty==null) l.stockedQty=Math.max(0,(l.deliveredQty||0)-(l.scrap||0));
+  }));
   // Promote foreignCost → cost (native currency); remove redundant foreignCost field
   (S.orders||[]).forEach(o=>{
     o.lines.forEach(l=>{
@@ -964,7 +985,7 @@ function saveFile(){
   const blob=new Blob([JSON.stringify(S,null,2)],{type:'application/json'});
   const a=document.createElement('a');
   a.href=URL.createObjectURL(blob);
-  const d=new Date().toISOString().slice(0,10);
+  const d=_localDateStr();
   a.download=`axispilot-${d}.json`;
   a.click();
 }
@@ -976,24 +997,46 @@ function toCSV(rows){
   if(!rows.length) return '';
   const headers=Object.keys(rows[0]);
   const lines=[headers.join(',')];
-  rows.forEach(r=>lines.push(headers.map(h=>{
-    const v=r[h]==null?'':String(r[h]);
-    return v.includes(',')||v.includes('"')?`"${v.replace(/"/g,'""')}"`:v;
-  }).join(',')));
+  rows.forEach(r=>lines.push(headers.map(h=>_csvEscape(r[h]==null?'':r[h])).join(',')));
   return lines.join('\n');
+}
+
+// Split CSV text into records of {fields, quoted}. Handles "quoted, fields", "" escapes
+// and newlines inside quotes. `quoted` records whether any field in the row was quoted.
+function _csvRecords(text){
+  const recs=[];
+  let fields=[], cur='', inQ=false, quoted=false;
+  for(let i=0;i<text.length;i++){
+    const c=text[i];
+    if(inQ){
+      if(c==='"'){
+        if(text[i+1]==='"'){ cur+='"'; i++; }
+        else inQ=false;
+      } else cur+=c;
+    } else if(c==='"' && cur===''){ inQ=true; quoted=true; }
+    else if(c===','){ fields.push(cur); cur=''; }
+    else if(c==='\n'||c==='\r'){
+      if(c==='\r'&&text[i+1]==='\n') i++;
+      fields.push(cur); recs.push({fields,quoted});
+      fields=[]; cur=''; quoted=false;
+    } else cur+=c;
+  }
+  if(cur!==''||fields.length){ fields.push(cur); recs.push({fields,quoted}); }
+  return recs;
 }
 
 function parseCSV(text){
   // Strip BOM if present
   text=text.replace(/^\uFEFF/,'');
-  const lines=text.trim().split(/\r?\n/);
-  const headers=lines[0].split(',').map(h=>h.trim());
+  const recs=_csvRecords(text.trim());
+  if(!recs.length) return [];
+  const headers=recs[0].fields.map(h=>h.trim());
   const numCols=headers.length;
-  return lines.slice(1).filter(l=>l.trim()).map(line=>{
-    // Split on commas, then re-join overflow columns into the second column
-    // This handles descriptions that contain commas (unquoted)
-    const raw=line.split(',');
-    if(raw.length<=numCols){
+  return recs.slice(1).filter(r=>r.fields.some(f=>f.trim())).map(({fields:raw,quoted})=>{
+    // Legacy fallback: an unquoted row with more fields than headers is assumed to be a
+    // hand-edited file whose description (2nd column) contains commas \u2014 re-join the overflow.
+    // Properly quoted rows (everything this app exports) never take this path.
+    if(raw.length<=numCols||quoted){
       // Normal case - pad if needed
       const obj={};
       headers.forEach((h,i)=>obj[h]=(raw[i]??'').trim());
@@ -1016,8 +1059,8 @@ function exportCSV(type){
   if(type==='products'){
     rows=S.products.map(p=>({
       code:p.code,description:p.desc,type:p.type||'',drawing:p.drawing||'',probability_pct:+(p.prob*100).toFixed(1),
-      lead_days:p.leadDays,moq:p.moq||1,
-      reorder_qty:p.reorderQty,moq:p.moq||1,current_stock:p.stock,active:p.suppressed?'0':'1'
+      lead_days:p.leadDays,moq:p.moq||1,unit_cost:p.cost||0,
+      reorder_qty:p.reorderQty,current_stock:p.stock,active:p.suppressed?'0':'1'
     }));
   } else if(type==='forecast'){
     rows=monthList(MONTHS).map(m=>({month:m.key,label:m.label,cases:S.forecast[m.key]||0}));
@@ -1061,7 +1104,7 @@ function exportCSV(type){
         unit_cost_native:l.cost, currency:l.currency||'GBP',
         unit_cost_gbp:+lineGbpCost(l).toFixed(4),
         line_total_gbp:+(l.qty*lineGbpCost(l)).toFixed(2),
-        delivered_qty:l.deliveredQty||0, acceptable:l.acceptable||0, scrap:l.scrap||0,
+        delivered_qty:l.deliveredQty||0, acceptable:l.acceptable||0, scrap:l.scrap||0, stocked_qty:l.stockedQty||0,
         notes:o.notes
       });
     }));
@@ -1070,7 +1113,7 @@ function exportCSV(type){
   const blob=new Blob([toCSV(rows)],{type:'text/csv'});
   const a=document.createElement('a');
   a.href=URL.createObjectURL(blob);
-  a.download=`axispilot-${name}-${new Date().toISOString().slice(0,10)}.csv`;
+  a.download=`axispilot-${name}-${_localDateStr()}.csv`;
   a.click();
 }
 
@@ -1081,6 +1124,9 @@ function importCSV(type, e){
   reader.onload=ev=>{
     try{
       const rows=parseCSV(ev.target.result);
+      const skipped=new Set(); // product codes in the file that don't match any product
+      const stockCounted=new Set(); // products whose Current Stock this import set
+      let stockNote='';
       if(type==='products'){
         rows.forEach(row=>{
           const code=(row.code||row.Code||'').trim();
@@ -1095,7 +1141,7 @@ function importCSV(type, e){
           if(row.unit_cost) p.cost=parseFloat(row.unit_cost)||0;
           if(row.moq) p.moq=parseInt(row.moq)||1;
           if(row.reorder_qty) p.reorderQty=parseInt(row.reorder_qty)||0;
-          p.stock=parseFloat(row.current_stock)||0;
+          if(row.current_stock!==undefined&&row.current_stock!==''){ p.stock=parseFloat(row.current_stock)||0; stockCounted.add(p.id); }
           if(row.active!==undefined) p.suppressed=(row.active==='0'||row.active==='false');
         });
       } else if(type==='forecast'){
@@ -1104,7 +1150,8 @@ function importCSV(type, e){
         rows.forEach(row=>{
           const code=(row.code||row.Code||'').trim();
           const p=S.products.find(x=>x.code===code);
-          if(p) p.stock=parseFloat(row.current_stock||row['Current Stock'])||0;
+          if(p){ p.stock=parseFloat(row.current_stock||row['Current Stock'])||0; stockCounted.add(p.id); }
+          else if(code) skipped.add(code);
         });
       } else if(type==='orders'){
         const grouped={};
@@ -1117,13 +1164,16 @@ function importCSV(type, e){
           const deliveredQty=parseInt(row.delivered_qty)||0;
           const acceptable=parseInt(row.acceptable)||0;
           const scrap=parseInt(row.scrap)||0;
+          // Older exports have no stocked_qty column: assume delivered goods are already in stock
+          const stockedQty=(row.stocked_qty!==undefined&&row.stocked_qty!=='')?(parseInt(row.stocked_qty)||0):Math.max(0,deliveredQty-scrap);
           const lineDeliveryDate=_normaliseDate(row.line_delivery_date);
           if(row.manual==='1'||(!(row.product_code||'').trim()&&(row.line_description||'').trim())){
             grouped[no].lines.push({manual:true,description:(row.line_description||'').trim(),qty,cost:nativeCost,currency:cur,deliveryDate:lineDeliveryDate,deliveredQty,acceptable,scrap});
           } else {
             const code=(row.product_code||'').trim();
             const p=S.products.find(x=>x.code===code);
-            if(p) grouped[no].lines.push({productId:p.id,qty,cost:nativeCost,currency:cur,deliveryDate:lineDeliveryDate,deliveredQty,acceptable,scrap});
+            if(p) grouped[no].lines.push({productId:p.id,qty,cost:nativeCost,currency:cur,deliveryDate:lineDeliveryDate,deliveredQty,acceptable,scrap,stockedQty});
+            else skipped.add(code||'(blank)');
           }
         });
         Object.values(grouped).forEach(o=>{
@@ -1144,7 +1194,7 @@ function importCSV(type, e){
           if(code&&qty>0){
             const p=S.products.find(x=>x.code===code);
             if(p) grouped[name].lines.push({productId:p.id,qty});
-            // if product not found, skip silently
+            else skipped.add(code);
           }
         });
         Object.values(grouped).forEach(g=>{
@@ -1159,7 +1209,7 @@ function importCSV(type, e){
           }
         });
       } else if(type==='pricing'){
-        S.pricingRules=[];
+        if(!S.pricingRules) S.pricingRules=[];
         // Group rows by (supplier, model, target) tuple
         const grouped={};
         rows.forEach(row=>{
@@ -1172,7 +1222,7 @@ function importCSV(type, e){
             // Resolve: try as productId, then as product code
             let p=S.products.find(x=>x.id===target);
             if(!p){ const code=(row.target_label||row.product_code||row.code||target).trim(); p=S.products.find(x=>x.code===code); }
-            if(!p) return; // unknown product
+            if(!p){ skipped.add(row.target_label||row.product_code||row.code||target); return; }
             target=p.id;
           }
           // drawing model: target is the drawing string directly
@@ -1183,7 +1233,10 @@ function importCSV(type, e){
         });
         Object.values(grouped).forEach(({supplier,model,target,currency,tiers})=>{
           const sorted=tiers.sort((a,b)=>a.minQty-b.minQty);
-          S.pricingRules.push({id:uid(),supplier,model,target,currency:currency||'GBP',tiers:sorted});
+          // Upsert: a rule in the file replaces the matching rule's tiers; rules not in the file are kept
+          const existing=S.pricingRules.find(r=>r.supplier===supplier&&r.model===model&&r.target===target);
+          if(existing){ existing.currency=currency||'GBP'; existing.tiers=sorted; }
+          else S.pricingRules.push({id:uid(),supplier,model,target,currency:currency||'GBP',tiers:sorted});
         });
       } else if(type==='setsplanned'){
         if(!S.setsPlanned) S.setsPlanned={};
@@ -1197,9 +1250,14 @@ function importCSV(type, e){
           S.setsPlanned[s.id][month]=planned;
         });
       }
+      if(stockCounted.size) stockNote=_confirmStockCountIncludesAwaiting(stockCounted);
       renderAll();
-      saveState(`Imported CSV: ${type} (${rows.length} rows)`);
-      alert(`Imported ${rows.length} row(s) into ${type}.`);
+      saveState(`Imported CSV: ${type} (${rows.length} rows)${stockNote}`);
+      const skipNote=skipped.size?`
+
+Skipped rows for ${skipped.size} unknown product code(s):
+${[...skipped].slice(0,20).join(', ')}${skipped.size>20?', …':''}`:'';
+      alert(`Imported ${rows.length} row(s) into ${type}${stockNote}.${skipNote}`);
     }catch(err){ alert('Import error: '+err.message); }
   };
   reader.readAsText(file);
@@ -1213,8 +1271,8 @@ function showTab(name){
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
   document.getElementById('tab-'+name).classList.add('active');
-  const idx=['dashboard','products','pricing','forecast','sets','stock','projection','orders','recommended','financials','changelog'].indexOf(name);
-  document.querySelectorAll('nav button')[idx].classList.add('active');
+  document.querySelectorAll('nav button')[TAB_NAMES.indexOf(name)].classList.add('active');
+  _activeTab=name;
   renderAll();
   if(name==='projection') setTimeout(scrollTimelineToToday,60);
 }
@@ -1227,15 +1285,17 @@ function saveProduct(){
   const desc=document.getElementById('pf-desc').value.trim();
   if(!code||!desc){ alert('Code and Description are required.'); return; }
   const id=document.getElementById('pf-id').textContent;
+  // Start from the existing record so fields not on the form (cost, moq, stock, suppressed…) survive an edit
+  const existing=id?S.products.find(p=>p.id===id):null;
   const prod={
+    cost:0, moq:1, stock:0, suppressed:false,
+    ...(existing||{}),
     id:id||uid(), code, desc,
     type:document.getElementById('pf-type').value.trim(),
     drawing:document.getElementById('pf-drawing').value.trim(),
     prob:Math.min(1,Math.max(0,(parseFloat(document.getElementById('pf-prob').value)||0)/100)),
     leadDays:parseInt(document.getElementById('pf-lead').value)||0,
-    reorderQty:parseInt(document.getElementById('pf-reorderqty').value)||0,
-    stock:id?(S.products.find(p=>p.id===id)?.stock||0):0,
-    suppressed:id?(S.products.find(p=>p.id===id)?.suppressed||false):false
+    reorderQty:parseInt(document.getElementById('pf-reorderqty').value)||0
   };
   if(id){ const i=S.products.findIndex(p=>p.id===id); S.products[i]=prod; }
   else S.products.push(prod);
@@ -1273,7 +1333,7 @@ function populateTypeFilters(){
   ['prod-type-filter','proj-type-filter'].forEach(sid=>{
     const sel=document.getElementById(sid); if(!sel) return;
     const cur=sel.value;
-    sel.innerHTML='<option value="">All Types</option>'+types.map(t=>`<option value="${t}" ${t===cur?'selected':''}>${t}</option>`).join('');
+    sel.innerHTML='<option value="">All Types</option>'+types.map(t=>`<option value="${esc(t)}" ${t===cur?'selected':''}>${esc(t)}</option>`).join('');
   });
 }
 function toggleSuppressed(id){
@@ -1296,10 +1356,10 @@ function renderProducts(){
   tb.innerHTML=prods.map(p=>`
     <tr style="${p.suppressed?'opacity:.4':''}">
       <td style="text-align:center"><input type="checkbox" ${p.suppressed?'':'checked'} onchange="toggleSuppressed('${p.id}')" title="${p.suppressed?'Suppressed — click to activate':'Active — click to suppress'}" style="width:16px;height:16px;cursor:pointer;accent-color:var(--accent)"></td>
-      <td class="mono">${p.code}</td>
-      <td class="label-cell">${p.desc}</td>
-      <td>${p.type?`<span class="tag ok" style="background:#f0f4ff;color:var(--blue)">${p.type}</span>`:'—'}</td>
-      <td class="mono">${p.drawing||'—'}</td>
+      <td class="mono">${esc(p.code)}</td>
+      <td class="label-cell">${esc(p.desc)}</td>
+      <td>${p.type?`<span class="tag ok" style="background:#f0f4ff;color:var(--blue)">${esc(p.type)}</span>`:'—'}</td>
+      <td class="mono">${esc(p.drawing||'—')}</td>
       <td>${(p.prob*100).toFixed(0)}%</td>
       <td>${p.leadDays}d</td>
       <td>${p.reorderQty||'—'}</td>
@@ -1350,7 +1410,7 @@ function renderForecastMonthsGrid(){
     <div class="fld">
       <label>${m.label}</label>
       <input type="number" min="0" step="0.1" value="${S.forecast[m.key]||''}" placeholder="0"
-        onchange="S.forecast['${m.key}']=parseFloat(this.value)||0;renderDemandTimeline();renderStockTimeline();renderDashboard()">
+        onchange="S.forecast['${m.key}']=parseFloat(this.value)||0;renderDemandTimeline();saveState('Updated forecast: ${m.label}')">
     </div>
   `).join('')}</div>`;
 }
@@ -1365,30 +1425,89 @@ function calcDemand(){
   return out;
 }
 
+// Units delivered (and not scrapped) that haven't been put into stock yet. They're on site but
+// not in Current Stock (which is counted externally), so they still count as incoming supply.
+function _awaitingStockQty(l){
+  if(l.manual) return 0;
+  return Math.max(0,(l.deliveredQty||0)-(l.scrap||0)-(l.stockedQty||0));
+}
+function _awaitingStockByProduct(){
+  const out={};
+  S.orders.filter(o=>o.status!=='Cancelled').forEach(o=>o.lines.forEach(l=>{
+    const q=_awaitingStockQty(l);
+    if(q>0) out[l.productId]=(out[l.productId]||0)+q;
+  }));
+  return out;
+}
+// Mark every awaiting unit for these products as in stock. Returns the number of units marked.
+function _markStocked(productIds){
+  let n=0;
+  S.orders.filter(o=>o.status!=='Cancelled').forEach(o=>o.lines.forEach(l=>{
+    const q=_awaitingStockQty(l);
+    if(q>0&&productIds.has(l.productId)){ l.stockedQty=(l.stockedQty||0)+q; n+=q; }
+  }));
+  return n;
+}
+// After a new stock count is entered, ask whether it already includes awaiting units.
+// Returns a note for the change log / alert ('' if nothing was marked).
+function _confirmStockCountIncludesAwaiting(productIds){
+  const awaiting=_awaitingStockByProduct();
+  const ids=[...productIds].filter(id=>awaiting[id]>0);
+  if(!ids.length) return '';
+  const list=ids.slice(0,15).map(id=>`  ${S.products.find(p=>p.id===id)?.code||id}: ${awaiting[id]}`).join('\n')
+    +(ids.length>15?`\n  …and ${ids.length-15} more`:'');
+  if(!confirm(`These products have delivered units not yet marked as in stock:\n\n${list}\n\n`+
+    `Does the stock count you just entered already include them?\n\n`+
+    `OK — yes, mark them as in stock\nCancel — no, keep counting them as awaiting stock`)) return '';
+  const n=_markStocked(new Set(ids));
+  return ` (${n} delivered unit${n!==1?'s':''} marked in stock)`;
+}
+function markLineStocked(orderId, lineIdx){
+  const o=S.orders.find(x=>x.id===orderId);
+  const l=o?.lines[lineIdx]; if(!l) return;
+  const q=_awaitingStockQty(l); if(q<=0) return;
+  l.stockedQty=(l.stockedQty||0)+q;
+  _expandedOrders.add(orderId);
+  const code=S.products.find(p=>p.id===l.productId)?.code||'?';
+  renderAll(); saveState(`Marked ${q} × ${code} in stock (${o.no})`);
+}
+
+// Incoming supply per product: map[productId][creditMonthKey] = qty.
+//  • Outstanding qty on open orders (line delivery date if set, else the order's), credited to
+//    the month AFTER its delivery date (it's in stock for that month's opening). Overdue
+//    deliveries that would land before the horizon go in the first month rather than vanishing.
+//  • Units delivered but awaiting stock are on site now, so they go in the first month.
+function _pendingDeliveryMap(months){
+  const map={};
+  const firstKey=months[0].key;
+  const add=(pid,key,q)=>{ if(!map[pid]) map[pid]={}; map[pid][key]=(map[pid][key]||0)+q; };
+  S.orders.filter(o=>o.status!=='Cancelled').forEach(o=>{
+    o.lines.forEach(l=>{
+      if(l.manual) return;
+      const awaiting=_awaitingStockQty(l);
+      if(awaiting>0) add(l.productId,firstKey,awaiting);
+      if(o.status==='Received') return;
+      const remaining=(l.qty||0)-(l.deliveredQty||0);
+      if(remaining<=0) return;
+      const dateStr=l.deliveryDate||o.deliveryDate;
+      if(!dateStr) return;
+      const d=new Date(/^\d{4}-\d{2}-\d{2}$/.test(dateStr)?dateStr+'T00:00:00':dateStr);
+      if(isNaN(d)) return;
+      let ck=_localDateStr(new Date(d.getFullYear(),d.getMonth()+1,1)).slice(0,7);
+      if(ck<firstKey) ck=firstKey;
+      add(l.productId,ck,remaining);
+    });
+  });
+  return map;
+}
+
 function calcStockProjection(){
   const months=monthList(MONTHS);
   const demand=calcDemand();
   const minStock=calcSetsMinStock(demand); // pass demand — avoids a second calcDemand() call
   const out={};
 
-  // Pre-build delivery lookup: deliveryMap[productId][creditMonthKey] = totalQty
-  // Uses per-line delivery date if set, otherwise falls back to order-level date.
-  // Only counts qty not yet individually received (l.qty - l.deliveredQty).
-  const deliveryMap={};
-  S.orders.filter(o=>o.status!=='Cancelled'&&o.status!=='Received').forEach(o=>{
-    o.lines.forEach(l=>{
-      const remaining=(l.qty||0)-(l.deliveredQty||0);
-      if(remaining<=0) return;
-      const dateStr=l.deliveryDate||o.deliveryDate;
-      if(!dateStr) return;
-      const d=new Date(dateStr);
-      if(isNaN(d)) return;
-      const cd=new Date(d.getFullYear(),d.getMonth()+1,1);
-      const ck=`${cd.getFullYear()}-${String(cd.getMonth()+1).padStart(2,'0')}`;
-      if(!deliveryMap[l.productId]) deliveryMap[l.productId]={};
-      deliveryMap[l.productId][ck]=(deliveryMap[l.productId][ck]||0)+remaining;
-    });
-  });
+  const deliveryMap=_pendingDeliveryMap(months);
 
   activeProducts().forEach(p=>{
     out[p.id]={};
@@ -1434,7 +1553,7 @@ function renderDemandTimeline(){
   const headerCols=months.map(m=>`<th class="month-head">${m.label}</th>`).join('');
   const rows=activeProducts().map(p=>`
     <tr>
-      <td class="pname">${p.code} — ${p.desc}</td>
+      <td class="pname">${esc(p.code)} — ${esc(p.desc)}</td>
       ${months.map(m=>{
         const v=demand[p.id][m.key]||0;
         return `<td>${v>0?(v<1?v.toFixed(2):Math.ceil(v)):'—'}</td>`;
@@ -1450,25 +1569,34 @@ function renderDemandTimeline(){
 function renderStockTable(){
   const tb=document.getElementById('stock-table-tbody');
   if(!tb) return;
-  if(!S.products.length){ tb.innerHTML='<tr><td colspan="6" class="empty">No products yet. Add products first.</td></tr>'; return; }
+  if(!S.products.length){ tb.innerHTML='<tr><td colspan="7" class="empty">No products yet. Add products first.</td></tr>'; return; }
   const prods=sortArr(activeProducts(), sortState.stock.col, sortState.stock.dir);
+  const awaiting=_awaitingStockByProduct();
   applySortHeaders('stock-table-tbody','stock');
   tb.innerHTML=prods.map(p=>`
     <tr>
-      <td class="mono">${p.code}</td>
-      <td class="label-cell">${p.desc}</td>
-      <td>${p.type?`<span class="tag ok" style="background:#f0f4ff;color:var(--blue)">${p.type}</span>`:'—'}</td>
+      <td class="mono">${esc(p.code)}</td>
+      <td class="label-cell">${esc(p.desc)}</td>
+      <td>${p.type?`<span class="tag ok" style="background:#f0f4ff;color:var(--blue)">${esc(p.type)}</span>`:'—'}</td>
       <td><input type="number" min="0" step="0.01" id="st-${p.id}" value="${p.stock||0}" style="width:90px;padding:4px 8px"></td>
+      <td>${awaiting[p.id]?`<span style="color:var(--amber);font-weight:600">${awaiting[p.id]}</span>`:'—'}</td>
       <td>${p.reorderQty||'—'}</td>
       <td>${p.leadDays}d</td>
     </tr>
   `).join('');
 }
 function saveStockLevels(){
-  S.products.forEach(p=>{ const el=document.getElementById('st-'+p.id); if(el) p.stock=parseFloat(el.value)||0; });
-  renderStockTimeline(); renderDashboard();
-  saveState('Updated stock levels');
-  alert('Stock levels saved.');
+  const changed=new Set();
+  S.products.forEach(p=>{
+    const el=document.getElementById('st-'+p.id); if(!el) return;
+    const v=parseFloat(el.value)||0;
+    if(v!==(p.stock||0)) changed.add(p.id);
+    p.stock=v;
+  });
+  const note=_confirmStockCountIncludesAwaiting(changed);
+  renderAll();
+  saveState('Updated stock levels'+note);
+  alert('Stock levels saved.'+note);
 }
 
 function printProjection(){
@@ -1526,7 +1654,7 @@ function printProjection(){
   </style>
   </head><body>
   <h1>Stock Projection</h1>
-  <div class="sub">${subtitle} &nbsp;·&nbsp; Printed ${today}</div>
+  <div class="sub">${esc(subtitle)} &nbsp;·&nbsp; Printed ${today}</div>
   <div class="legend">
     <span class="lbadge green">GREEN</span> OK &nbsp;
     <span class="lbadge amber">AMBER</span> Approaching minimum &nbsp;
@@ -1566,8 +1694,8 @@ function printOrder(orderId){
   const lineRows = o.lines.map((l,i)=>{
     const p = l.manual ? null : S.products.find(x=>x.id===l.productId);
     if(!l.manual&&!p) return '';
-    const code = l.manual ? '<span class="manual-badge">MANUAL</span>' : `<strong>${p.code}</strong>`;
-    const desc = l.manual ? (l.description||'<em>No description</em>') : p.desc;
+    const code = l.manual ? '<span class="manual-badge">MANUAL</span>' : `<strong>${esc(p.code)}</strong>`;
+    const desc = l.manual ? (l.description?esc(l.description):'<em>No description</em>') : esc(p.desc);
     const unitGbp = lineGbpCost(l);
     const lineTotal = l.qty * unitGbp;
     // Native currency display
@@ -1609,7 +1737,7 @@ function printOrder(orderId){
 
   const w = window.open('','_blank','width=900,height=1100');
   w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8">
-  <title>PO ${o.no}</title>
+  <title>PO ${esc(o.no)}</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap');
     :root{--ink:#1a1814;--muted:#6b6357;--accent:#1a3a2a;--border:#d4cfc6;--surface:#f9f7f3;
@@ -1677,14 +1805,14 @@ function printOrder(orderId){
     <div class="po-brand">Axis<span>Pilot</span></div>
     <div class="po-title">
       <h1>Purchase Order</h1>
-      <div class="po-no">${o.no}</div>
+      <div class="po-no">${esc(o.no)}</div>
     </div>
   </div>
 
   <div class="meta-grid">
     <div class="meta-cell">
       <div class="meta-label">Supplier</div>
-      <div class="meta-value large">${o.supplier||'—'}</div>
+      <div class="meta-value large">${esc(o.supplier||'—')}</div>
     </div>
     <div class="meta-cell">
       <div class="meta-label">Date Ordered</div>
@@ -1708,7 +1836,7 @@ function printOrder(orderId){
     </div>
     ${o.notes?`<div class="meta-cell notes-cell">
       <div class="meta-label">Notes</div>
-      <div class="meta-value" style="font-family:var(--sans)">${o.notes}</div>
+      <div class="meta-value" style="font-family:var(--sans)">${esc(o.notes)}</div>
     </div>`:''}
   </div>
 
@@ -1809,11 +1937,11 @@ function renderStockTimeline(){
              `<td class="${cls}" style="color:var(--blue);font-weight:600">${minD}</td>`+
              `<td class="${cls}${reorderFlag?' cell-reorder':''}">${closeStock}${orderMark}</td>`;
     }).join('');
-    const typeBadge=p.type?` <span style="font-size:.65rem;background:#f0f4ff;color:var(--blue);padding:1px 5px;border-radius:3px;font-family:var(--sans)">${p.type}</span>`:'';
+    const typeBadge=p.type?` <span style="font-size:.65rem;background:#f0f4ff;color:var(--blue);padding:1px 5px;border-radius:3px;font-family:var(--sans)">${esc(p.type)}</span>`:'';
     const probPct=Math.round((p.prob||0)*100);
     const probColour=probPct>=75?'var(--green)':probPct>=40?'var(--amber)':'var(--muted)';
     const probBadge=`<span style="font-size:.65rem;font-family:var(--mono);font-weight:700;color:${probColour};margin-left:4px" title="Usage probability">${probPct}%</span>`;
-    return `<tr><td class="pname">${p.code}${typeBadge}${probBadge}<br><span style="font-size:.7rem;color:var(--muted);font-family:var(--sans)">${p.desc}</span></td>${cols}</tr>`;
+    return `<tr><td class="pname">${esc(p.code)}${typeBadge}${probBadge}<br><span style="font-size:.7rem;color:var(--muted);font-family:var(--sans)">${esc(p.desc)}</span></td>${cols}</tr>`;
   }).join('');
 
   el.innerHTML=`<table class="timeline-table"><thead>`+
@@ -2059,7 +2187,7 @@ function renderPricingProductSelect(){
   if(!sel) return;
   const cur=sel.value;
   sel.innerHTML='<option value="">— select product —</option>'+
-    activeProducts().map(p=>`<option value="${p.id}" ${p.id===cur?'selected':''}>${p.code} — ${p.desc}</option>`).join('');
+    activeProducts().map(p=>`<option value="${p.id}" ${p.id===cur?'selected':''}>${esc(p.code)} — ${esc(p.desc)}</option>`).join('');
   renderPricingDrawingSelect();
 }
 function renderPricingDrawingSelect(){
@@ -2068,7 +2196,7 @@ function renderPricingDrawingSelect(){
   const cur=sel.value;
   const drawings=[...new Set(activeProducts().map(p=>p.drawing||'').filter(Boolean))].sort();
   sel.innerHTML='<option value="">— select drawing —</option>'+
-    drawings.map(d=>`<option value="${d}" ${d===cur?'selected':''}>${d}</option>`).join('');
+    drawings.map(d=>`<option value="${esc(d)}" ${d===cur?'selected':''}>${esc(d)}</option>`).join('');
 }
 
 function renderPricing(){
@@ -2092,7 +2220,7 @@ function renderPricing(){
   applySortHeaders('pricing-tbody','pricing');
   tb.innerHTML=sorted.map(r=>{
     const supplierBadge=r.supplier
-      ?`<span class="mono" style="font-size:.78rem">${r.supplier}</span>`
+      ?`<span class="mono" style="font-size:.78rem">${esc(r.supplier)}</span>`
       :`<span class="tag" style="font-size:.68rem">Any</span>`;
     const modelBadge=r.model==='product'
       ?`<span class="tag ok" style="font-size:.68rem">Product</span>`
@@ -2100,10 +2228,10 @@ function renderPricing(){
     let targetCell='';
     if(r.model==='product'){
       const p=S.products.find(x=>x.id===r.target);
-      targetCell=p?`<span class="mono" style="font-size:.78rem">${p.code}</span><br><span style="font-size:.72rem;color:var(--muted)">${p.desc}</span>`:`<span style="color:var(--muted)">${r.target}</span>`;
+      targetCell=p?`<span class="mono" style="font-size:.78rem">${esc(p.code)}</span><br><span style="font-size:.72rem;color:var(--muted)">${esc(p.desc)}</span>`:`<span style="color:var(--muted)">${esc(r.target)}</span>`;
     } else {
       const matches=activeProducts().filter(p=>p.drawing===r.target);
-      targetCell=`<span class="mono" style="font-size:.78rem">${r.target}</span><br><span style="font-size:.72rem;color:var(--muted)">${matches.length} product${matches.length!==1?'s':''}: ${matches.map(p=>p.code).join(', ')}</span>`;
+      targetCell=`<span class="mono" style="font-size:.78rem">${esc(r.target)}</span><br><span style="font-size:.72rem;color:var(--muted)">${matches.length} product${matches.length!==1?'s':''}: ${matches.map(p=>esc(p.code)).join(', ')}</span>`;
     }
     const rSym=r.currency==='EUR'?'€':r.currency==='USD'?'$':'£';
     const rRate=r.currency&&r.currency!=='GBP'?(S.rates?.[r.currency]||1):1;
@@ -2161,7 +2289,7 @@ function renderOrderLines(){
       return '<div style="margin-bottom:10px">'
         +'<div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:8px;align-items:end">'
         +'<div class="fld"><label>Description <span style="background:#f3e8ff;color:#7c3aed;border:1px solid #ddd6fe;border-radius:3px;padding:0 5px;font-size:.65rem;font-weight:700;margin-left:5px;vertical-align:middle">MANUAL</span></label>'
-        +'<input type="text" value="'+(l.description||'')+'" placeholder="e.g. Document pack, Setup fee…" onchange="orderLines['+i+'].description=this.value"></div>'
+        +'<input type="text" value="'+esc(l.description||'')+'" placeholder="e.g. Document pack, Setup fee…" onchange="orderLines['+i+'].description=this.value"></div>'
         +'<div class="fld"><label>Qty'+delivBadge+'</label>'
         +'<input type="number" min="1" value="'+l.qty+'" onchange="orderLines['+i+'].qty=Math.max(parseFloat(this.value)||1,1)"></div>'
         +'<div class="fld"><label>Unit Cost ('+lineCurrSymbol+lineCurrency+')</label>'
@@ -2187,11 +2315,11 @@ function renderOrderLines(){
       if(rule&&rule.model==='drawing'&&prod?.drawing){
         const combined=orderLines.reduce((s,ol)=>{const op=S.products.find(x=>x.id===ol.productId);return (op&&op.drawing===prod.drawing)?s+(ol.qty||0):s;},0);
         const combinedPrice=_applyTiers(rule.tiers,combined);
-        hints+=' <span style="background:#e3f2fd;color:var(--blue);padding:1px 7px;border-radius:3px;font-size:.72rem;font-weight:600">Drawing "'+prod.drawing+'": combined qty '+combined+' \u2192 \u00a3'+(combinedPrice??0).toFixed(2)+'/unit</span>';
+        hints+=' <span style="background:#e3f2fd;color:var(--blue);padding:1px 7px;border-radius:3px;font-size:.72rem;font-weight:600">Drawing "'+esc(prod.drawing)+'": combined qty '+combined+' \u2192 \u00a3'+(combinedPrice??0).toFixed(2)+'/unit</span>';
       }
     }
     const hintRow=hints?'<div style="margin-top:3px">'+hints+'</div>':'';
-    const opts=activeProducts().map(p=>'<option value="'+p.id+'"'+(p.id===l.productId?' selected':'')+'>'+p.code+' \u2014 '+p.desc+'</option>').join('');
+    const opts=activeProducts().map(p=>'<option value="'+p.id+'"'+(p.id===l.productId?' selected':'')+'>'+esc(p.code)+' \u2014 '+esc(p.desc)+'</option>').join('');
     return '<div style="margin-bottom:10px">'
       +'<div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:8px;align-items:end">'
       +'<div class="fld"><label>Product</label>'
@@ -2207,6 +2335,17 @@ function renderOrderLines(){
       +'</div>'+hintRow+'</div>';
   }).join('');
 }
+// Derive Pending / Partial / Received from line delivered quantities. Cancelled orders stay cancelled.
+// >= covers over-delivery; all lines must be at or above their ordered qty
+function _recalcOrderStatus(o){
+  if (o.status === 'Cancelled') return;
+  const allDone = o.lines.length > 0 && o.lines.every(ln => (ln.deliveredQty || 0) >= ln.qty);
+  const anyDone = o.lines.some(ln => (ln.deliveredQty || 0) > 0);
+  o.status = allDone ? 'Received' : anyDone ? 'Partial' : 'Pending';
+  if (allDone && !o.receivedDate) o.receivedDate = _localDateStr();
+  if (!allDone) delete o.receivedDate;
+}
+
 function receiveOrderLine(orderId, lineIdx, qty){
   const o = S.orders.find(x => x.id === orderId);
   if (!o) return;
@@ -2216,12 +2355,10 @@ function receiveOrderLine(orderId, lineIdx, qty){
   const receiving = Math.min(Math.max(0, qty), remaining);
   if (receiving <= 0) return;
   l.deliveredQty = (l.deliveredQty || 0) + receiving;
-  const allDone = o.lines.every(ln => (ln.deliveredQty || 0) >= ln.qty);
-  const anyDone = o.lines.some(ln => (ln.deliveredQty || 0) > 0);
-  o.status = allDone ? 'Received' : anyDone ? 'Partial' : 'Pending';
-  if (allDone) o.receivedDate = new Date().toISOString().slice(0, 10);
+  _recalcOrderStatus(o);
   _expandedOrders.add(orderId); // keep expanded after receiving
-  renderAll();
+  renderAll(); saveState(`Received ${receiving} on ${o.no}`);
+  _toast(`Received ${receiving} on ${o.no} — counted as awaiting stock until marked in stock (on the order, or at your next stock count).`);
 }
 
 function setDeliveredQty(orderId, lineIdx, newQty){
@@ -2231,14 +2368,7 @@ function setDeliveredQty(orderId, lineIdx, newQty){
   if (!l) return;
   const clamped = Math.max(0, newQty);
   l.deliveredQty = clamped;
-
-  // Recalculate order status
-  // >= covers over-delivery; all lines must be at or above their ordered qty
-  const allDone = o.lines.every(ln => (ln.deliveredQty || 0) >= ln.qty);
-  const anyDone = o.lines.some(ln => (ln.deliveredQty || 0) > 0);
-  o.status = allDone ? 'Received' : anyDone ? 'Partial' : 'Pending';
-  if (allDone && !o.receivedDate) o.receivedDate = new Date().toISOString().slice(0, 10);
-  if (!allDone) delete o.receivedDate;
+  _recalcOrderStatus(o);
   _expandedOrders.add(orderId);
   renderAll(); saveState('Updated delivery quantities');
 }
@@ -2327,23 +2457,21 @@ function _recalcFormLine(i){
   }
   renderOrderLines();
 }
-function fillLineCost(i,pid){
-  orderLines[i].productId=pid;
-  _recalcFormLine(i);
-}
 function saveOrder(){
   const no=document.getElementById('of-no').value.trim();
   if(!no){ alert('Order No is required.'); return; }
   if(!orderLines.length||!orderLines.some(l=>l.productId||l.manual)){ alert('Add at least one product line.'); return; }
   const id=document.getElementById('of-id').textContent;
+  const existing=id?S.orders.find(o=>o.id===id):null;
   const order={
+    ...(existing||{}),   // keep status, receivedDate and any other fields not on the form
     id:id||uid(), no,
     dateOrdered:document.getElementById('of-date').value,
     deliveryDate:document.getElementById('of-delivery').value,
     supplier:document.getElementById('of-supplier').value.trim(),
     notes:document.getElementById('of-notes').value.trim(),
     currency:document.getElementById('of-currency').value||'GBP',
-    status:'Pending',
+    status:existing?.status||'Pending',
     lines:orderLines.filter(l=>l.productId||l.manual).map(l=>({
       ...(l.manual ? {manual:true, description:l.description||''} : {productId:l.productId}),
       qty:l.qty, cost:l.cost,
@@ -2351,9 +2479,11 @@ function saveOrder(){
       deliveryDate:l.deliveryDate||'',
       deliveredQty:l.deliveredQty||0,
       acceptable:l.acceptable||0,
-      scrap:l.scrap||0
+      scrap:l.scrap||0,
+      stockedQty:l.stockedQty||0
     }))
   };
+  if(existing) _recalcOrderStatus(order);   // line qtys may have changed
   if(id){ const i=S.orders.findIndex(o=>o.id===id); S.orders[i]=order; }
   else S.orders.push(order);
   cancelOrderEdit(); renderAll(); saveState(id?`Edited order: ${no}`:`Created order: ${no}`);
@@ -2383,14 +2513,12 @@ function editOrder(id){
 function markReceived(id){
   const o=S.orders.find(x=>x.id===id); if(!o) return;
   o.status='Received';
-  o.receivedDate=new Date().toISOString().slice(0,10);
-  // auto-update stock for any qty not yet individually received
-  o.lines.forEach(l=>{
-    const alreadyReceived = l.deliveredQty || 0;
-    const remaining = l.qty - alreadyReceived;
-    l.deliveredQty = l.qty;
-  });
+  o.receivedDate=_localDateStr();
+  // Mark every line fully delivered. Current stock is NOT changed here — it's counted
+  // externally (Stock tab / stock CSV import), so remind the user instead.
+  o.lines.forEach(l=>{ l.deliveredQty = Math.max(l.deliveredQty||0, l.qty); });
   renderAll(); saveState(`Marked received: ${o.no}`);
+  _toast(`${o.no} received — counted as awaiting stock until marked in stock (on the order, or at your next stock count).`);
 }
 function cancelOrder(id){
   const o=S.orders.find(x=>x.id===id); if(!o) return;
@@ -2421,7 +2549,7 @@ function renderOrders(){
       :'<span style="color:var(--muted);font-size:.65rem">▶</span>';
     const total=o.total;
     const lineCount=o.lines.length;
-    const products=o.lines.slice(0,3).map(l=>{if(l.manual) return `${l.description||'Manual'} ×${l.qty}`;const p=S.products.find(x=>x.id===l.productId);return `${p?.code||'?'} ×${l.qty}`;}).join(', ')+(lineCount>3?` +${lineCount-3} more`:'');
+    const products=o.lines.slice(0,3).map(l=>{if(l.manual) return `${esc(l.description||'Manual')} ×${l.qty}`;const p=S.products.find(x=>x.id===l.productId);return `${esc(p?.code||'?')} ×${l.qty}`;}).join(', ')+(lineCount>3?` +${lineCount-3} more`:'');
     const printBtn=`<button class="btn ghost sm" onclick="event.stopPropagation();printOrder('${o.id}')" title="Print this order">🖨</button>`;
     const actions=(o.status==='Pending'||o.status==='Partial')
       ?`<button class="btn sm" onclick="event.stopPropagation();markReceived('${o.id}')">✓ All Received</button> <button class="btn ghost sm" onclick="event.stopPropagation();editOrder('${o.id}')">Edit</button> <button class="btn danger sm" onclick="event.stopPropagation();cancelOrder('${o.id}')">Cancel</button> ${printBtn}`
@@ -2430,10 +2558,10 @@ function renderOrders(){
         :`<button class="btn ghost sm" onclick="event.stopPropagation();editOrder('${o.id}')">View</button> ${printBtn}`;
     const mainRow=`<tr style="cursor:pointer" onclick="toggleOrderExpand('${o.id}')">
       <td style="text-align:center;padding:8px 4px">${chevron}</td>
-      <td class="mono">${o.no}</td>
+      <td class="mono">${esc(o.no)}</td>
       <td>${o.dateOrdered||'—'}</td>
       <td>${o.deliveryDate||'—'}</td>
-      <td>${o.supplier||'—'}</td>
+      <td>${esc(o.supplier||'—')}</td>
       <td style="max-width:200px;white-space:normal;font-size:.75rem">${products||'—'}</td>
       <td style="font-family:var(--mono)">${(()=>{if(total<=0)return'—';const fx=_orderFxTotal(o);return'£'+total.toFixed(2)+(fx?`<br><span style="color:var(--muted);font-size:.73rem">${_fxSymbol(fx.currency)}${fx.fxTotal.toFixed(2)}\u00a0${fx.currency}</span>`:'');})()}</td>
       <td><span class="tag ${o.status.toLowerCase()}">${o.status}</span></td>
@@ -2457,7 +2585,7 @@ function renderOrders(){
       const p=l.manual ? null : S.products.find(x=>x.id===l.productId);
       if(!l.manual&&!p) return '';
       const lineCode = l.manual
-        ? `<span style="background:#f3e8ff;color:#7c3aed;border:1px solid #ddd6fe;border-radius:3px;padding:0 5px;font-size:.65rem;font-weight:700;margin-right:5px">MANUAL</span>${l.description||'<em style="color:var(--muted)">No description</em>'}`
+        ? `<span style="background:#f3e8ff;color:#7c3aed;border:1px solid #ddd6fe;border-radius:3px;padding:0 5px;font-size:.65rem;font-weight:700;margin-right:5px">MANUAL</span>${l.description?esc(l.description):'<em style="color:var(--muted)">No description</em>'}`
         : p.code;
       const lineDesc = l.manual ? '' : p.desc;
       const delivered=l.deliveredQty||0;
@@ -2467,6 +2595,16 @@ function renderOrders(){
         title="Edit to correct received quantity"
         onchange="setDeliveredQty('${o.id}',${i},parseInt(this.value)||0)">`;
       const overDelivery = remaining < 0;
+      const awaitingQty = _awaitingStockQty(l);
+      const stockCtrl = (!l.manual && delivered > 0)
+        ? `<div style="margin-top:4px;font-size:.72rem;display:flex;gap:4px;align-items:center;white-space:nowrap">In stock
+            <input type="number" min="0" value="${l.stockedQty||0}" title="Units from this line now included in Current Stock"
+              style="width:52px;padding:1px 4px;border:1px solid var(--border);border-radius:3px;font-size:.75rem;font-family:var(--mono)"
+              onchange="setLineField('${o.id}',${i},'stockedQty',this.value)">
+            ${awaitingQty > 0 ? `<span style="color:var(--amber);font-weight:600" title="Delivered, not scrapped, not yet in Current Stock — counted as available in the projection">${awaitingQty} awaiting</span>
+            <button class="btn ghost sm" style="padding:0 6px" onclick="markLineStocked('${o.id}',${i})" title="Mark these ${awaitingQty} units as now included in Current Stock">✓ In stock</button>` : ''}
+          </div>`
+        : '';
       const statusBadge = overDelivery
         ? `<span style="background:#fce4ec;color:#c62828;padding:1px 8px;border-radius:3px;font-size:.72rem;font-weight:600" title="Received ${Math.abs(remaining)} more than ordered">⚠ Over by ${Math.abs(remaining)}</span>`
         : remaining === 0
@@ -2517,7 +2655,7 @@ function renderOrders(){
         <td style="font-family:var(--mono)">${delivLabel}</td>
         <td>${acceptableInput}</td>
         <td>${scrapInput}</td>
-        <td>${statusBadge}</td>
+        <td>${statusBadge}${stockCtrl}</td>
         <td>${lineDate}</td>
         <td>${receiveCtrl}</td>
       </tr>`;
@@ -2552,11 +2690,12 @@ function renderDashboard(){
   // Alerts
   const alertsEl=document.getElementById('dash-alerts');
   const alerts=[];
+  const awaitingStock=_awaitingStockByProduct();
   activeProducts().forEach(p=>{
-    if((p.stock||0)<=0) alerts.push(`<div class="alert"><strong>${p.code} — ${p.desc}</strong><span class="sub">OUT OF STOCK now. Lead time: ${p.leadDays} days.</span></div>`);
+    if((p.stock||0)<=0) alerts.push(`<div class="alert"><strong>${esc(p.code)} — ${esc(p.desc)}</strong><span class="sub">OUT OF STOCK now${awaitingStock[p.id]?` (${awaitingStock[p.id]} delivered, awaiting stock)`:''}. Lead time: ${p.leadDays} days.</span></div>`);
     else{
       const firstStockout=months.find(m=>(proj[p.id]?.[m.key]?.closeStock||0)<=0);
-      if(firstStockout) alerts.push(`<div class="alert warn"><strong>${p.code} — ${p.desc}</strong><span class="sub">Projected stockout in ${firstStockout.label}. Lead time: ${p.leadDays} days.</span></div>`);
+      if(firstStockout) alerts.push(`<div class="alert warn"><strong>${esc(p.code)} — ${esc(p.desc)}</strong><span class="sub">Projected stockout in ${firstStockout.label}. Lead time: ${p.leadDays} days.</span></div>`);
     }
   });
   alertsEl.innerHTML=alerts.length?alerts.join(''):'<div class="empty">✓ No stock alerts</div>';
@@ -2573,7 +2712,7 @@ function renderDashboard(){
       const monthsAway=months.indexOf(firstReorder);
       const urgency=monthsAway<=leadMonths?'alert':'alert warn';
       const qty=p.reorderQty||Math.ceil((proj[p.id]?.[firstReorder.key]?.demand||0)*leadMonths);
-      recs.push(`<div class="${urgency}"><strong>Order ${p.code}</strong> by ~${firstReorder.label}<span class="sub">Suggest reorder qty: ${qty}. Lead: ${p.leadDays}d.</span></div>`);
+      recs.push(`<div class="${urgency}"><strong>Order ${esc(p.code)}</strong> by ~${firstReorder.label}<span class="sub">Suggest reorder qty: ${qty}. Lead: ${p.leadDays}d.</span></div>`);
     }
   });
   reorderEl.innerHTML=recs.length?recs.join(''):'<div class="empty">✓ No reorder actions needed</div>';
@@ -2583,8 +2722,8 @@ function renderDashboard(){
   const pending=S.orders.filter(o=>o.status==='Pending');
   if(!pending.length){ pendingTb.innerHTML='<tr><td colspan="5" class="empty">No pending orders.</td></tr>'; }
   else pendingTb.innerHTML=pending.map(o=>{
-    const prods=o.lines.map(l=>{ const p=S.products.find(x=>x.id===l.productId); return `${p?.code||'?'} ×${l.qty}`; }).join(', ');
-    return `<tr><td class="mono">${o.no}</td><td style="font-size:.75rem">${prods}</td><td>${o.lines.reduce((s,l)=>s+l.qty,0)}</td><td>${o.deliveryDate||'—'}</td><td><span class="tag pending">Pending</span></td></tr>`;
+    const prods=o.lines.map(l=>{ const p=S.products.find(x=>x.id===l.productId); return `${esc(p?.code||'?')} ×${l.qty}`; }).join(', ');
+    return `<tr><td class="mono">${esc(o.no)}</td><td style="font-size:.75rem">${prods}</td><td>${o.lines.reduce((s,l)=>s+l.qty,0)}</td><td>${o.deliveryDate||'—'}</td><td><span class="tag pending">Pending</span></td></tr>`;
   }).join('');
 
   // Mini stock overview
@@ -2596,7 +2735,7 @@ function renderDashboard(){
       let color=v<=0?'var(--red)':v<=(proj[p.id]?.[m.key]?.demand||0)*(Math.ceil(p.leadDays/30)||1)?'var(--amber)':'var(--green)';
       return `<span style="display:inline-block;margin-left:8px;color:${color};font-family:var(--mono);font-size:.78rem">${m.label}: ${v.toFixed(0)}</span>`;
     }).join('');
-    return `<div style="margin-bottom:6px;font-size:.82rem"><strong>${p.code}</strong>${cells}</div>`;
+    return `<div style="margin-bottom:6px;font-size:.82rem"><strong>${esc(p.code)}</strong>${cells}</div>`;
   }).join('');
 }
 
@@ -2619,7 +2758,7 @@ function renderSetLines(){
       <div class="fld"><label>Product</label>
         <select onchange="setLines[${i}].productId=this.value">
           <option value="">— select —</option>
-          ${activeProducts().map(p=>`<option value="${p.id}" ${p.id===l.productId?'selected':''}>${p.code} — ${p.desc}</option>`).join('')}
+          ${activeProducts().map(p=>`<option value="${p.id}" ${p.id===l.productId?'selected':''}>${esc(p.code)} — ${esc(p.desc)}</option>`).join('')}
         </select>
       </div>
       <div class="fld"><label>Qty in Set</label><input type="number" min="1" value="${l.qty}" onchange="setLines[${i}].qty=parseInt(this.value)||1"></div>
@@ -2679,14 +2818,14 @@ function renderSetConfigsList(){
   if(!el) return;
   if(!(S.sets||[]).length){ el.innerHTML='<div class="empty" style="padding:12px">No sets defined yet.</div>'; return; }
   el.innerHTML=S.sets.map(s=>{
-    const lines=s.lines.map(l=>{ const p=S.products.find(x=>x.id===l.productId); return `${p?.code||'?'} ×${l.qty}`; }).join(', ');
+    const lines=s.lines.map(l=>{ const p=S.products.find(x=>x.id===l.productId); return `${esc(p?.code||'?')} ×${l.qty}`; }).join(', ');
     return `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px;margin-bottom:8px">
       <div style="display:flex;align-items:center;gap:10px">
-        <span style="font-weight:600;font-size:.88rem;flex:1">${s.name}</span>
+        <span style="font-weight:600;font-size:.88rem;flex:1">${esc(s.name)}</span>
         <button class="btn ghost sm" onclick="editSetConfig('${s.id}')">Edit</button>
         <button class="btn danger sm" onclick="deleteSetConfig('${s.id}')">Del</button>
       </div>
-      ${s.desc?`<div class="help">${s.desc}</div>`:''}
+      ${s.desc?`<div class="help">${esc(s.desc)}</div>`:''}
       <div style="font-size:.75rem;color:var(--muted);font-family:var(--mono);margin-top:4px">${lines}</div>
     </div>`;
   }).join('');
@@ -2700,7 +2839,7 @@ function renderSetsMonthlyGrid(){
   if(!S.setsPlanned) S.setsPlanned={};
   el.innerHTML=S.sets.map(s=>`
     <div style="margin-bottom:16px">
-      <div style="font-weight:600;font-size:.85rem;margin-bottom:8px">${s.name} ${s.desc?`<span style="font-weight:400;color:var(--muted)">— ${s.desc}</span>`:''}
+      <div style="font-weight:600;font-size:.85rem;margin-bottom:8px">${esc(s.name)} ${s.desc?`<span style="font-weight:400;color:var(--muted)">— ${esc(s.desc)}</span>`:''}
         <span style="font-size:.72rem;font-family:var(--mono);color:var(--muted);margin-left:8px">${s.lines.length} product${s.lines.length!==1?'s':''} in set</span>
       </div>
       <div class="form-grid">
@@ -2708,7 +2847,7 @@ function renderSetsMonthlyGrid(){
           <div class="fld">
             <label>${m.label}</label>
             <input type="number" min="0" value="${(S.setsPlanned[s.id]||{})[m.key]||''}" placeholder="0"
-              onchange="if(!S.setsPlanned)S.setsPlanned={};if(!S.setsPlanned['${s.id}'])S.setsPlanned['${s.id}']={};S.setsPlanned['${s.id}']['${m.key}']=parseInt(this.value)||0;renderSetsTimelines();renderStockTimeline();saveState('Updated planned sets');">
+              onchange="if(!S.setsPlanned)S.setsPlanned={};if(!S.setsPlanned['${s.id}'])S.setsPlanned['${s.id}']={};S.setsPlanned['${s.id}']['${m.key}']=parseInt(this.value)||0;renderSetsTimelines();saveState('Updated planned sets');">
           </div>
         `).join('')}
       </div>
@@ -2796,7 +2935,7 @@ function renderSetsMinTimeline(){
       return `<td class="${cls}" style="font-weight:600">${min>0?min:'—'}</td><td class="${cls}">${stock}</td><td class="${cls}" style="font-weight:700">${gapStr}</td>`;
     }).join('');
     const typeBadge=p.type?` <span style="font-size:.65rem;background:#f0f4ff;color:var(--blue);padding:1px 5px;border-radius:3px;font-family:var(--sans)">${p.type}</span>`:'';
-    return `<tr><td class="pname">${p.code}${typeBadge}<br><span style="font-size:.7rem;color:var(--muted);font-family:var(--sans)">${p.desc}</span></td>${cols}</tr>`;
+    return `<tr><td class="pname">${esc(p.code)}${typeBadge}<br><span style="font-size:.7rem;color:var(--muted);font-family:var(--sans)">${esc(p.desc)}</span></td>${cols}</tr>`;
   }).join('');
 
   el.innerHTML=`<table class="timeline-table"><thead><tr><th rowspan="2">Product</th>${headerCols}</tr><tr>${subHeader}</tr></thead><tbody>${rows}</tbody></table>`;
@@ -2816,7 +2955,7 @@ function renderSetsReservedTimeline(){
       const v=reserved[p.id]?.[m.key]||0;
       return `<td>${v>0?v:'—'}</td>`;
     }).join('');
-    return `<tr><td class="pname">${p.code}<br><span style="font-size:.7rem;color:var(--muted);font-family:var(--sans)">${p.desc}</span></td>${cols}</tr>`;
+    return `<tr><td class="pname">${esc(p.code)}<br><span style="font-size:.7rem;color:var(--muted);font-family:var(--sans)">${esc(p.desc)}</span></td>${cols}</tr>`;
   }).join('');
 
   el.innerHTML=`<table class="timeline-table"><thead><tr><th>Product</th>${headerCols}</tr></thead><tbody>${rows}</tbody></table>`;
@@ -2825,70 +2964,6 @@ function renderSetsReservedTimeline(){
 // ══════════════════════════════════════════════════════════
 // RECOMMENDED ORDERS
 // ══════════════════════════════════════════════════════════
-function calcRecommendedLines(){
-  // Returns [{product, recommendedQty, pendingQty, orderQty, urgency}]
-  const months = monthList(MONTHS);
-  const proj = calcStockProjection();
-  const demand = calcDemand();
-  const minStock = calcSetsMinStock();
-  const coverMonths = Math.max(1, parseInt(document.getElementById('rec-cover-months')?.value) || 3);
-  const lines = [];
-
-  activeProducts().forEach(p => {
-    // Find first month with reorder flag
-    const firstReorderMonth = months.find(m => proj[p.id]?.[m.key]?.reorderFlag);
-    if (!firstReorderMonth) return;
-
-    const leadMonths = Math.ceil(p.leadDays / 30) || 1;
-    const urgencyIdx = months.indexOf(firstReorderMonth);
-
-    // Calculate demand over the cover period starting from lead time months ahead
-    let rawCoverDemand = 0;
-    const coverStart = Math.min(urgencyIdx, leadMonths);
-    for (let i = coverStart; i < Math.min(coverStart + coverMonths, months.length); i++) {
-      rawCoverDemand += demand[p.id][months[i].key] || 0;
-    }
-
-    // Target stock = max(reorderQty, coverDemand) + min stock in that window
-    const maxMinInWindow = months.slice(coverStart, coverStart + coverMonths)
-      .reduce((mx, m) => Math.max(mx, Math.ceil(minStock[p.id]?.[m.key] || 0)), 0);
-
-    // Stock we'll have when the order arrives (close of lead-time month)
-    const arrivalMonthIdx = Math.min(leadMonths, months.length - 1);
-    const stockAtArrival = proj[p.id]?.[months[arrivalMonthIdx].key]?.closeStock || 0;
-
-    // Already on order (pending)
-    const pendingQty = S.orders
-      .filter(o => o.status === 'Pending')
-      .flatMap(o => o.lines)
-      .filter(l => l.productId === p.id)
-      .reduce((s, l) => s + l.qty, 0);
-
-    const coverDemand = Math.ceil(rawCoverDemand);   // single ceil after summing
-    const targetStock = Math.max(p.reorderQty || 0, coverDemand + maxMinInWindow);
-    let orderQty = Math.max(0, targetStock - stockAtArrival - pendingQty);
-    // Enforce MOQ — round up to nearest multiple of effective MOQ (driven by pricing tiers)
-    const moq = getEffectiveMOQ(p.id);
-    if(orderQty > 0 && moq > 1){
-      orderQty = Math.ceil(orderQty / moq) * moq;
-    }
-    if (orderQty <= 0) return;
-
-    lines.push({
-      product: p,
-      recommendedQty: orderQty,
-      pendingQty: Math.ceil(pendingQty),
-      targetStock,
-      stockAtArrival: Math.ceil(stockAtArrival),
-      urgencyIdx,
-      urgency: urgencyIdx <= leadMonths ? 'urgent' : 'soon',
-      firstReorderLabel: firstReorderMonth.label
-    });
-  });
-
-  return lines;
-}
-
 // ──────────────────────────────────────────────────────────
 // Full-horizon order schedule simulation
 // Returns [{orderMonthKey, orderDateStr, lines:[{product,qty,unitCost,lineCost,deliveryDateStr}]}]
@@ -2939,7 +3014,7 @@ function calcOrderSchedule(){
   const minStockMap = calcSetsMinStock(demand);
   const spacingMonths = Math.max(1, parseInt(document.getElementById('rec-order-spacing')?.value) || 3);
   const supplierOverride = (document.getElementById('rec-supplier-override')?.value || '').trim();
-  const baseOrderDateStr = document.getElementById('rec-order-date')?.value || new Date().toISOString().slice(0,10);
+  const baseOrderDateStr = document.getElementById('rec-order-date')?.value || _localDateStr();
   const baseOrderDate = new Date(baseOrderDateStr + 'T00:00:00');
   const horizonEnd = months[months.length - 1].date;
 
@@ -2953,21 +3028,10 @@ function calcOrderSchedule(){
   const products = activeProducts();
 
   // Per-product accumulated deliveries: pending orders + newly planned
+  // (same month-crediting rule as the Projection tab, so the two views agree)
+  const pending = _pendingDeliveryMap(months);
   const deliveries = {};
-  products.forEach(p => { deliveries[p.id] = {}; });
-  S.orders.filter(o => o.status !== 'Cancelled' && o.status !== 'Received').forEach(o => {
-    o.lines.forEach(l => {
-      if (!deliveries[l.productId]) return;
-      const remaining = (l.qty || 0) - (l.deliveredQty || 0);
-      if (remaining <= 0) return;
-      const dateStr = l.deliveryDate || o.deliveryDate;
-      if (!dateStr) return;
-      const d = new Date(dateStr);
-      if (isNaN(d)) return;
-      const ck = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-      deliveries[l.productId][ck] = (deliveries[l.productId][ck] || 0) + remaining;
-    });
-  });
+  products.forEach(p => { deliveries[p.id] = { ...(pending[p.id] || {}) }; });
 
   // Simulate stock for product p up to and including targetMonthIdx
   function stockAt(p, targetMonthIdx) {
@@ -2986,7 +3050,7 @@ function calcOrderSchedule(){
   const events = [];
 
   orderDates.forEach((orderDate, k) => {
-    const orderDateStr = orderDate.toISOString().slice(0, 10);
+    const orderDateStr = _localDateStr(orderDate);
     const orderMonthKey = orderDateStr.slice(0, 7);
     const lines = [];
 
@@ -2996,7 +3060,7 @@ function calcOrderSchedule(){
       // This order's delivery
       const delivDate = new Date(orderDate);
       delivDate.setDate(delivDate.getDate() + (p.leadDays || 0));
-      const delivDateStr = delivDate.toISOString().slice(0, 10);
+      const delivDateStr = _localDateStr(delivDate);
       const delivMonthKey = `${delivDate.getFullYear()}-${String(delivDate.getMonth()+1).padStart(2,'0')}`;
       const delivIdx = months.findIndex(m => m.key === delivMonthKey);
       const safeDelivIdx = delivIdx >= 0 ? delivIdx : months.length - 1;
@@ -3147,7 +3211,7 @@ function renderRecommended(){
     const currentVal = overrideSel.value;
     const suppliers = [...new Set((S.pricingRules || []).map(r => r.supplier).filter(s => s && s.trim()))].sort();
     overrideSel.innerHTML = '<option value="">— Auto (best price)</option>'
-      + suppliers.map(s => `<option value="${s}"${s === currentVal ? ' selected' : ''}>${s}</option>`).join('');
+      + suppliers.map(s => `<option value="${esc(s)}"${s === currentVal ? ' selected' : ''}>${esc(s)}</option>`).join('');
   }
 
   _lastSchedule = calcOrderSchedule();
@@ -3155,26 +3219,29 @@ function renderRecommended(){
   _renderSchedule();
 }
 
+// The current order schedule, as shown on Recommended Orders (including any per-line supplier
+// changes). Financials reads it from here too so the screen, print and CSV always agree.
+function _getSchedule(){
+  if (!_lastSchedule.length && !_loadScheduleFromState()) {
+    _lastSchedule = calcOrderSchedule();
+    if (_lastSchedule.length) _syncScheduleToState();
+  }
+  return _lastSchedule;
+}
+
 function _renderSchedule(){
   const container = document.getElementById('rec-orders-container');
   if (!container) return;
-  // First visit — restore from saved state or calculate fresh
-  if (!_lastSchedule.length) {
-    const overrideSel = document.getElementById('rec-supplier-override');
-    if (overrideSel && overrideSel.options.length <= 1) {
-      const suppliers = [...new Set((S.pricingRules || []).map(r => r.supplier).filter(s => s && s.trim()))].sort();
-      overrideSel.innerHTML = '<option value="">— Auto (best price)</option>'
-        + suppliers.map(s => `<option value="${s}">${s}</option>`).join('');
-    }
-    if (!_loadScheduleFromState()) {
-      _lastSchedule = calcOrderSchedule();
-      _syncScheduleToState();
-    }
+  const overrideSel = document.getElementById('rec-supplier-override');
+  if (overrideSel && overrideSel.options.length <= 1) {
+    const suppliers = [...new Set((S.pricingRules || []).map(r => r.supplier).filter(s => s && s.trim()))].sort();
+    overrideSel.innerHTML = '<option value="">— Auto (best price)</option>'
+      + suppliers.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
   }
-  const schedule = _lastSchedule;
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const schedule = _getSchedule();
+  const todayStr = _localDateStr();
   const soonDate = new Date(); soonDate.setDate(soonDate.getDate() + 30);
-  const soonStr = soonDate.toISOString().slice(0, 10);
+  const soonStr = _localDateStr(soonDate);
 
   if (!schedule.length) {
     container.innerHTML = '<div class="card"><div class="card-body"><div class="empty">✓ No reorder actions needed across the planning horizon — all products are sufficiently stocked.</div></div></div>';
@@ -3238,7 +3305,7 @@ function _renderSchedule(){
       });
       const supTotal = entries.reduce((s, {l}) => s + l.lineCost, 0);
       const supplierLabel = supplier
-        ? `<span style="font-family:var(--mono);font-size:.8rem;font-weight:700;background:var(--accent-light);color:var(--accent);padding:2px 10px;border-radius:3px;margin-left:10px">${supplier}</span>`
+        ? `<span style="font-family:var(--mono);font-size:.8rem;font-weight:700;background:var(--accent-light);color:var(--accent);padding:2px 10px;border-radius:3px;margin-left:10px">${esc(supplier)}</span>`
         : `<span style="font-size:.75rem;color:var(--muted);margin-left:8px">Supplier not specified</span>`;
 
       const tableRows = entries.map(({ l, lineIdx }) => {
@@ -3256,7 +3323,7 @@ function _renderSchedule(){
           ? `£${l.lineCost.toFixed(2)}`
           : `<span style="color:var(--muted)">—</span>`;
         const supOpts = '<option value="">— Auto</option>'
-          + availableSuppliers.map(s => `<option value="${s}"${s===l.ruleSupplier?' selected':''}>${s}</option>`).join('');
+          + availableSuppliers.map(s => `<option value="${esc(s)}"${s===l.ruleSupplier?' selected':''}>${esc(s)}</option>`).join('');
         const fxNote = (l.foreignPrice !== null && l.foreignPrice !== undefined && l.ruleCurrency !== 'GBP')
           ? ` <span style="color:var(--muted)">${l.ruleCurrency==='EUR'?'€':l.ruleCurrency==='USD'?'$':l.ruleCurrency}${l.foreignPrice.toFixed(2)}</span>` : '';
         const pendingNote = pendingQty > 0 ? `<span style="color:var(--muted)"> · Pending: ${pendingQty}</span>` : '';
@@ -3265,7 +3332,7 @@ function _renderSchedule(){
           ? `<span style="font-family:var(--mono);font-size:.78rem;font-weight:600;color:${prob>=75?'var(--green)':prob>=40?'var(--amber)':'var(--muted)'}">${prob}%</span>`
           : `<span style="color:var(--muted)">—</span>`;
         return `<tr>
-          <td class="label-cell">${p.code}<br><span style="font-size:.75rem;color:var(--muted)">${p.desc}</span></td>
+          <td class="label-cell">${esc(p.code)}<br><span style="font-size:.75rem;color:var(--muted)">${esc(p.desc)}</span></td>
           <td style="text-align:right">${probCell}</td>
           <td>${l.qty}${moqNote}</td>
           <td style="font-family:var(--mono)">${costCell}${fxNote}</td>
@@ -3293,7 +3360,7 @@ function _renderSchedule(){
           <tbody>${tableRows}</tbody>
         </table></div>
         <div style="padding:8px 16px;border-top:1px solid var(--border);display:flex;align-items:center;background:var(--surface2)">
-          <button class="btn sm" style="margin-left:auto" onclick="createOrderFromRecommended(${dateIdx},'${supplier.replace(/'/g,"\\'")}')">➕ Create Order</button>
+          <button class="btn sm" style="margin-left:auto" onclick="createOrderFromRecommended(${dateIdx},${esc(JSON.stringify(supplier))})">➕ Create Order</button>
         </div>
       </div>`;
     }).join('');
@@ -3343,7 +3410,7 @@ function printFinancials(){
   const committed = pending.reduce((s,o)=>s+o.lines.reduce((ls,l)=>ls+l.qty*lineGbpCost(l),0),0);
   const receivedOrders = S.orders.filter(o=>o.status==='Received'&&(o.receivedDate||o.dateOrdered||'').startsWith(String(thisYear)));
   const receivedThisYear = receivedOrders.reduce((s,o)=>s+o.lines.reduce((ls,l)=>ls+l.qty*lineGbpCost(l),0),0);
-  const schedule = _lastSchedule.length ? _lastSchedule : calcOrderSchedule();
+  const schedule = _getSchedule();
   const forecast = schedule.reduce((s,ev)=>s+ev.lines.reduce((ls,l)=>ls+l.lineCost,0),0);
   const pipeline = committed + forecast;
 
@@ -3388,14 +3455,14 @@ function printFinancials(){
     committedHTML = Object.values(byMonth).map(grp=>{
       const rows = grp.orders.map(({o,amt,recv,acceptable,scrap})=>{
         const outstanding=amt-recv;
-        const prods=(()=>{const t={};let m=0;o.lines.forEach(l=>{if(l.manual){m+=l.qty||0;}else{const p=S.products.find(x=>x.id===l.productId);const k=p?.type||'Other';t[k]=(t[k]||0)+(l.qty||0);}});const parts=Object.entries(t).map(([k,q])=>`${k} ×${q}`);if(m>0)parts.push(`Manual ×${m}`);return parts.join(', ')||'—';})();
+        const prods=(()=>{const t={};let m=0;o.lines.forEach(l=>{if(l.manual){m+=l.qty||0;}else{const p=S.products.find(x=>x.id===l.productId);const k=p?.type||'Other';t[k]=(t[k]||0)+(l.qty||0);}});const parts=Object.entries(t).map(([k,q])=>`${esc(k)} ×${q}`);if(m>0)parts.push(`Manual ×${m}`);return parts.join(', ')||'—';})();
         const fx=_orderFxTotal(o);
         const fxNote=fx?`<div class="fx-note">${_fxSymbol(fx.currency)}${fx.fxTotal.toFixed(2)}\u00a0${fx.currency}</div>`:'';
         const outClass=outstanding<0?'over':outstanding===0?'muted':'amber';
         return `<tr>
           <td></td>
-          <td class="mono">${o.no}</td>
-          <td>${o.supplier||'—'}</td>
+          <td class="mono">${esc(o.no)}</td>
+          <td>${esc(o.supplier||'—')}</td>
           <td class="products">${prods}</td>
           <td class="num">£${amt.toFixed(2)}${fxNote}</td>
           <td class="num green">${recv>0?'£'+recv.toFixed(2):'—'}</td>
@@ -3430,7 +3497,7 @@ function printFinancials(){
       const orderMonth=new Date(ev.orderDateStr+'T00:00:00').toLocaleString('en-GB',{month:'short',year:'numeric'});
       const latestDelivery=ev.lines.reduce((latest,l)=>l.deliveryDateStr>latest?l.deliveryDateStr:latest,'');
       const delivMonth=latestDelivery?new Date(latestDelivery+'T00:00:00').toLocaleString('en-GB',{month:'short',year:'numeric'}):'—';
-      const prods=(()=>{const t={};ev.lines.forEach(l=>{const k=l.product?.type||'Other';t[k]=(t[k]||0)+(l.qty||0);});return Object.entries(t).map(([k,q])=>`${k} ×${q}`).join(', ')||'—';})();
+      const prods=(()=>{const t={};ev.lines.forEach(l=>{const k=l.product?.type||'Other';t[k]=(t[k]||0)+(l.qty||0);});return Object.entries(t).map(([k,q])=>`${esc(k)} ×${q}`).join(', ')||'—';})();
       const evFxByCur={};
       ev.lines.forEach(l=>{if(l.foreignPrice!=null&&l.ruleCurrency&&l.ruleCurrency!=='GBP') evFxByCur[l.ruleCurrency]=(evFxByCur[l.ruleCurrency]||0)+l.qty*l.foreignPrice;});
       const evFxNote=Object.entries(evFxByCur).map(([cur,amt])=>`${_fxSymbol(cur)}${amt.toFixed(2)}\u00a0${cur}`).join(' · ');
@@ -3576,7 +3643,7 @@ function printFinancials(){
 }
 
 function exportFinancialsCSV(){
-  const schedule = _lastSchedule.length ? _lastSchedule : calcOrderSchedule();
+  const schedule = _getSchedule();
   if(!schedule.length){ alert('No forecast schedule to export.'); return; }
   const rows = schedule.map(ev=>{
     const evTotal = ev.lines.reduce((s,l)=>s+l.lineCost,0);
@@ -3598,7 +3665,7 @@ function exportFinancialsCSV(){
   const blob = new Blob([toCSV(rows)],{type:'text/csv'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `axispilot-financials-${new Date().toISOString().slice(0,10)}.csv`;
+  a.download = `axispilot-financials-${_localDateStr()}.csv`;
   a.click();
 }
 
@@ -3618,8 +3685,8 @@ function renderFinancials(){
   const receivedOrders = S.orders.filter(o => o.status === 'Received' && (o.receivedDate || o.dateOrdered || '').startsWith(String(thisYear)));
   const receivedThisYear = receivedOrders.reduce((s, o) => s + o.lines.reduce((ls, l) => ls + l.qty * lineGbpCost(l), 0), 0);
 
-  // Forecast: from order schedule
-  const schedule = calcOrderSchedule();
+  // Forecast: same schedule as the Recommended Orders tab
+  const schedule = _getSchedule();
   const forecast = schedule.reduce((s, ev) => s + ev.lines.reduce((ls, l) => ls + l.lineCost, 0), 0);
   const pipeline = committed + forecast;
 
@@ -3676,13 +3743,13 @@ function renderFinancials(){
     committedTbody.innerHTML = Object.values(byMonth).map(grp => {
       const rows = grp.orders.map(({ o, amt, recv, acceptable, scrap }) => {
         const outstanding = amt - recv;
-        const prods = o.lines.map(l => { if(l.manual) return `${l.description||'Manual'} ×${l.qty}`; const p = S.products.find(x => x.id === l.productId); return `${p?.code||'?'} ×${l.qty}`; }).join(', ');
+        const prods = o.lines.map(l => { if(l.manual) return `${esc(l.description||'Manual')} ×${l.qty}`; const p = S.products.find(x => x.id === l.productId); return `${esc(p?.code||'?')} ×${l.qty}`; }).join(', ');
         const fx = _orderFxTotal(o);
         const fxCell = fx ? `<br><span style="color:var(--muted);font-size:.72rem">${_fxSymbol(fx.currency)}${fx.fxTotal.toFixed(2)}\u00a0${fx.currency}</span>` : '';
         return `<tr>
           <td style="color:var(--muted);font-size:.8rem"></td>
-          <td class="mono">${o.no}</td>
-          <td>${o.supplier||'—'}</td>
+          <td class="mono">${esc(o.no)}</td>
+          <td>${esc(o.supplier||'—')}</td>
           <td style="font-size:.8rem">${prods}</td>
           <td style="text-align:right;font-family:var(--mono)">£${amt.toFixed(2)}${fxCell}</td>
           <td style="text-align:right;font-family:var(--mono);color:var(--green)">${recv > 0 ? '£'+recv.toFixed(2) : '—'}</td>
@@ -3715,7 +3782,7 @@ function renderFinancials(){
       const orderMonth = new Date(ev.orderDateStr + 'T00:00:00').toLocaleString('en-GB', {month:'short', year:'numeric'});
       const latestDelivery = ev.lines.reduce((latest, l) => l.deliveryDateStr > latest ? l.deliveryDateStr : latest, '');
       const delivMonth = latestDelivery ? new Date(latestDelivery + 'T00:00:00').toLocaleString('en-GB', {month:'short', year:'numeric'}) : '—';
-      const prods = ev.lines.map(l => `${l.product.code} ×${l.qty}`).join(', ');
+      const prods = ev.lines.map(l => `${esc(l.product.code)} ×${l.qty}`).join(', ');
       const evFxByCur = {};
       ev.lines.forEach(l=>{ if(l.foreignPrice!=null&&l.ruleCurrency&&l.ruleCurrency!=='GBP') evFxByCur[l.ruleCurrency]=(evFxByCur[l.ruleCurrency]||0)+l.qty*l.foreignPrice; });
       const evFxNote = Object.entries(evFxByCur).map(([cur,amt])=>`${_fxSymbol(cur)}${amt.toFixed(2)}\u00a0${cur}`).join(' · ');
@@ -3736,6 +3803,16 @@ function setStatus(state,txt){
   const dot=document.getElementById('statusDot'),t=document.getElementById('statusTxt');
   if(dot) dot.className='status-dot'+(state==='ok'?' ok':state==='err'?' err':state==='spin'?' spin':'');
   if(t) t.textContent=txt||'';
+}
+// Brief non-blocking notice at the bottom of the screen
+let _toastTimer=null;
+function _toast(msg){
+  let el=document.getElementById('toast');
+  if(!el){ el=document.createElement('div'); el.id='toast'; el.setAttribute('role','status'); document.body.appendChild(el); }
+  el.textContent=msg;
+  el.classList.add('show');
+  clearTimeout(_toastTimer);
+  _toastTimer=setTimeout(()=>el.classList.remove('show'),6000);
 }
 function _showSaving(on){
   const b=document.getElementById('savingBadge');
@@ -3761,7 +3838,7 @@ async function _getDriveId(){
     const j=await r.json(); _driveId=j.id; return _driveId;
   }catch(e){ return null; }
 }
-function _csvEscape(v){const s=String(v);return(s.includes(',')||s.includes('"')||s.includes('\n'))?'"'+s.replace(/"/g,'""')+'"':s;}
+function _csvEscape(v){const s=String(v);return /[",\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;}
 async function _logAccess(action){
   try{
     const tok=await _getToken(); if(!tok) return;
@@ -3783,66 +3860,141 @@ async function _logAccess(action){
       {method:'PUT',headers:{Authorization:`Bearer ${tok}`,'Content-Type':'text/csv'},body:content});
   }catch(e){}
 }
+function _dataUrl(did,suffix){ return `https://graph.microsoft.com/v1.0/drives/${did}/root:/${DATA_FILE}${suffix||''}`; }
+
+// Optimistic concurrency: every save sends If-Match with the eTag of the version we last
+// loaded or saved. If someone else saved in between, SharePoint answers 412 and we ask
+// the user what to do instead of silently overwriting their work.
 function saveState(action){
   if(!_spReady) return;
   if(action) _nextSaveAction=action;
+  _dirty=true;
   clearTimeout(_saveTimer);
-  _saveTimer=setTimeout(async()=>{
-    _saveTimer=null;
-    const act=_nextSaveAction||'Data updated';
-    _nextSaveAction='';
-    const did=await _getDriveId(); if(!did) return;
-    _showSaving(true);
-    try{
-      const tok=await _getToken();
-      // Build changelog entry + snapshot
-      const snapId='snap_'+Date.now();
-      const acct=_msal.getAllAccounts()[0];
-      const user=acct?.name||acct?.username||'Unknown';
-      const entry={id:snapId,ts:new Date().toISOString(),user,action:act};
-      const snapData=JSON.parse(JSON.stringify(S));
-      delete snapData.changelog;  // don't nest changelogs
-      // Update changelog in S before saving main file
-      if(!S.changelog) S.changelog=[];
-      S.changelog.unshift(entry);
-      const pruned=S.changelog.length>30?S.changelog.splice(30):[];
-      // Save main file
-      const r=await fetch(`https://graph.microsoft.com/v1.0/drives/${did}/root:/${DATA_FILE}:/content`,
-        {method:'PUT',headers:{Authorization:`Bearer ${tok}`,'Content-Type':'application/json'},body:JSON.stringify(S)});
-      _showSaving(false);
-      if(!r.ok){ setStatus('err',`Save failed (${r.status})`); return; }
-      try{const m=await r.json();_lastModified=m.lastModifiedDateTime||m.eTag||null;}catch(x){}
-      setStatus('ok','Synced ✓');
-      // Save snapshot file (fire & forget)
-      fetch(`https://graph.microsoft.com/v1.0/drives/${did}/root:/${snapId}.json:/content`,
-        {method:'PUT',headers:{Authorization:`Bearer ${tok}`,'Content-Type':'application/json'},body:JSON.stringify(snapData)}).catch(()=>{});
-      // Prune old snapshot files (fire & forget)
-      pruned.forEach(old=>{
-        fetch(`https://graph.microsoft.com/v1.0/drives/${did}/root:/${old.id}.json`,
-          {method:'DELETE',headers:{Authorization:`Bearer ${tok}`}}).catch(()=>{});
-      });
-      renderChangelog();
-    }catch(e){ _showSaving(false); setStatus('err',`Save error: ${e.message}`); }
-  },1000);
+  _saveTimer=setTimeout(_doSave,1000);
 }
+async function _doSave(){
+  _saveTimer=null;
+  if(_saving){ _saveTimer=setTimeout(_doSave,1000); return; }   // one save at a time
+  const act=_nextSaveAction||'Data updated';
+  _nextSaveAction='';
+  const did=await _getDriveId();
+  if(!did){ _nextSaveAction=act; setStatus('err','Save failed — cannot reach SharePoint'); return; }
+  _saving=true;
+  _showSaving(true);
+  let entry=null;
+  try{
+    const tok=await _getToken();
+    // Build changelog entry + snapshot
+    const snapId='snap_'+Date.now();
+    const acct=_msal.getAllAccounts()[0];
+    const user=acct?.name||acct?.username||'Unknown';
+    entry={id:snapId,ts:new Date().toISOString(),user,action:act};
+    const snapData=JSON.parse(JSON.stringify(S));
+    delete snapData.changelog;  // don't nest changelogs
+    // Update changelog in S before saving main file
+    if(!S.changelog) S.changelog=[];
+    S.changelog.unshift(entry);
+    const pruned=S.changelog.slice(30);
+    const headers={Authorization:`Bearer ${tok}`,'Content-Type':'application/json'};
+    if(_eTag) headers['If-Match']=_eTag;
+    // Save main file (changelog trimmed to 30 in the payload)
+    const r=await fetch(_dataUrl(did,':/content'),
+      {method:'PUT',headers,body:JSON.stringify({...S,changelog:S.changelog.slice(0,30)})});
+    if(r.status===412){
+      _removeEntry(entry);
+      await _resolveConflict(did,tok,act);
+      return;
+    }
+    if(!r.ok){
+      _removeEntry(entry);
+      if(!_nextSaveAction) _nextSaveAction=act;   // carry the description into the next attempt
+      setStatus('err',`Save failed (${r.status}) — retrying in 30s`);
+      if(!_saveTimer) _saveTimer=setTimeout(_doSave,30000);
+      return;
+    }
+    S.changelog.splice(30);
+    try{ const m=await r.json(); _eTag=m.eTag||null; }catch(x){ _eTag=null; }
+    if(!_saveTimer) _dirty=false;
+    setStatus('ok','Synced ✓');
+    // Save snapshot file (fire & forget)
+    fetch(`https://graph.microsoft.com/v1.0/drives/${did}/root:/${snapId}.json:/content`,
+      {method:'PUT',headers:{Authorization:`Bearer ${tok}`,'Content-Type':'application/json'},body:JSON.stringify(snapData)}).catch(()=>{});
+    // Prune old snapshot files (fire & forget)
+    pruned.forEach(old=>{
+      fetch(`https://graph.microsoft.com/v1.0/drives/${did}/root:/${old.id}.json`,
+        {method:'DELETE',headers:{Authorization:`Bearer ${tok}`}}).catch(()=>{});
+    });
+    renderChangelog();
+  }catch(e){
+    if(entry) _removeEntry(entry);
+    if(!_nextSaveAction) _nextSaveAction=act;
+    setStatus('err',`Save error: ${e.message} — retrying in 30s`);
+    if(!_saveTimer) _saveTimer=setTimeout(_doSave,30000);
+  }finally{
+    _saving=false;
+    _showSaving(false);
+  }
+}
+function _removeEntry(entry){ if(S.changelog) S.changelog=S.changelog.filter(e=>e!==entry); }
+
+async function _resolveConflict(did,tok,act){
+  setStatus('err','Conflict — someone else saved');
+  let remote=null, remoteTag=null;
+  try{
+    const m=await fetch(_dataUrl(did),{headers:{Authorization:`Bearer ${tok}`}});
+    if(m.ok) remoteTag=(await m.json()).eTag||null;
+    const r=await fetch(_dataUrl(did,':/content'),{headers:{Authorization:`Bearer ${tok}`}});
+    if(r.ok) remote=await r.json();
+  }catch(e){}
+  if(!remote){
+    if(!_nextSaveAction) _nextSaveAction=act;
+    setStatus('err','Save conflict — could not load the other version. Use ↻ to reload.');
+    return;
+  }
+  const last=(remote.changelog||[])[0];
+  const who=last
+    ?`${last.user||'Someone'} saved "${last.action||'changes'}" at ${new Date(last.ts).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})}`
+    :'Someone else saved changes';
+  const keepTheirs=confirm(
+    `${who} since you last loaded.\n\n`+
+    `Your unsaved change: "${act}"\n\n`+
+    `OK — load their version. A backup of your version is downloaded first; your change is not applied.\n`+
+    `Cancel — overwrite their version with yours. Their changes will be lost.`);
+  if(keepTheirs){
+    saveFile();   // local backup so nothing is lost
+    clearTimeout(_saveTimer); _saveTimer=null;
+    _nextSaveAction=''; _dirty=false;
+    S=remote; _eTag=remoteTag;
+    migrateState(); renderAll();
+    setStatus('ok','Loaded latest ↺');
+  }else{
+    _eTag=remoteTag;   // we've now seen their version; overwrite it deliberately
+    saveState(`${_nextSaveAction||act} (overwrote a concurrent change)`);
+  }
+}
+
 async function _loadFromSP(){
   setStatus('spin','Loading…');
   const did=await _getDriveId();
   if(!did){ setStatus('err','Could not reach SharePoint'); return; }
   const tok=await _getToken();
   try{
-    const r=await fetch(`https://graph.microsoft.com/v1.0/drives/${did}/root:/${DATA_FILE}:/content`,{headers:{Authorization:`Bearer ${tok}`}});
-    if(r.status===404){ /* first run — start with empty state */ }
-    else if(!r.ok){ setStatus('err',`Load failed (${r.status})`); return; }
+    // Read the eTag before the content: if the file changes between the two requests, our
+    // next save gets a 412 (a harmless false conflict) rather than overwriting the newer version.
+    const m=await fetch(_dataUrl(did),{headers:{Authorization:`Bearer ${tok}`}});
+    if(m.status===404){ _eTag=null; /* first run — start with empty state */ }
+    else if(!m.ok){ setStatus('err',`Load failed (${m.status})`); return; }
     else{
-      _lastModified=r.headers.get('Last-Modified')||r.headers.get('ETag')||null;
+      _eTag=(await m.json()).eTag||null;
+      const r=await fetch(_dataUrl(did,':/content'),{headers:{Authorization:`Bearer ${tok}`}});
+      if(!r.ok){ setStatus('err',`Load failed (${r.status})`); return; }
       const saved=await r.json();
       if(saved&&typeof saved==='object') S=saved;
     }
   }catch(e){ setStatus('err',`Load error: ${e.message}`); return; }
   migrateState();
-  document.getElementById('of-date').value=new Date().toISOString().slice(0,10);
-  document.getElementById('rec-order-date').value=new Date().toISOString().slice(0,10);
+  document.getElementById('of-date').value=_localDateStr();
+  document.getElementById('rec-order-date').value=_localDateStr();
   renderAll();
   _spReady=true;
   setStatus('ok','Loaded ✓');
@@ -3850,27 +4002,33 @@ async function _loadFromSP(){
   _logAccess('login').catch(()=>{});
 }
 async function _checkForUpdates(force){
-  if(!_driveId||(_saveTimer&&!force)) return;
+  if(!_driveId||_saving) return;
+  // Never replace S behind the user's back while edits are unsaved — the save's
+  // If-Match check will surface any conflict instead.
+  if(_dirty||_saveTimer){
+    if(!force) return;
+    if(!confirm('You have unsaved changes. Discard them and reload from SharePoint?')) return;
+    clearTimeout(_saveTimer); _saveTimer=null;
+  }
   const tok=await _getToken(); if(!tok) return;
   try{
-    const r=await fetch(`https://graph.microsoft.com/v1.0/drives/${_driveId}/root:/${DATA_FILE}`,{headers:{Authorization:`Bearer ${tok}`}});
+    const r=await fetch(_dataUrl(_driveId),{headers:{Authorization:`Bearer ${tok}`}});
     if(!r.ok) return;
-    const meta=await r.json();
-    const remote=meta.lastModifiedDateTime||meta.eTag||null;
+    const remote=(await r.json()).eTag||null;
     if(!remote) return;
-    if(force||(_lastModified&&remote!==_lastModified)){
-      _lastModified=remote;
-      const r2=await fetch(`https://graph.microsoft.com/v1.0/drives/${_driveId}/root:/${DATA_FILE}:/content`,{headers:{Authorization:`Bearer ${tok}`}});
+    if(force||remote!==_eTag){
+      const r2=await fetch(_dataUrl(_driveId,':/content'),{headers:{Authorization:`Bearer ${tok}`}});
       if(!r2.ok) return;
       const saved=await r2.json();
+      if(_saving||(_saveTimer&&!force)) return;   // user started editing while we were fetching
       if(saved&&typeof saved==='object'){
-        S=saved;
+        S=saved; _eTag=remote; _dirty=false; _nextSaveAction='';
         migrateState();
         renderAll();
         setStatus('ok','Updated ↺');
         setTimeout(()=>setStatus('ok','Synced ✓'),3000);
       }
-    }else{ _lastModified=remote; }
+    }
   }catch(e){}
 }
 function _startPolling(){ clearInterval(_pollTimer); _pollTimer=setInterval(_checkForUpdates,90000); }
@@ -3956,8 +4114,8 @@ function renderChangelog(){
     const isCurrent=i===0;
     return `<tr style="${isCurrent?'background:var(--accent-light)':''}">
       <td style="font-size:.82rem;white-space:nowrap">${ts}</td>
-      <td style="font-size:.82rem">${e.user||'—'}</td>
-      <td style="font-size:.82rem">${e.action||'—'}${isCurrent?' <span style="font-size:.7rem;color:var(--green);font-weight:600"> ← current</span>':''}</td>
+      <td style="font-size:.82rem">${esc(e.user||'—')}</td>
+      <td style="font-size:.82rem">${esc(e.action||'—')}${isCurrent?' <span style="font-size:.7rem;color:var(--green);font-weight:600"> ← current</span>':''}</td>
       <td style="text-align:center">${isCurrent
         ?'<span style="font-size:.72rem;color:var(--muted)">current</span>'
         :`<button class="btn ghost sm" onclick="revertTo('${e.id}')" title="Restore this snapshot">↩ Revert</button>`
@@ -3989,27 +4147,32 @@ async function revertTo(snapId){
   }catch(e){ setStatus('err',`Revert error: ${e.message}`); }
 }
 
+// Each tab's render functions. Only the visible tab is rendered; the others are rendered
+// when shown, so a change never pays for redrawing all eleven tabs.
+const TAB_RENDERERS={
+  dashboard:  [renderDashboard],
+  products:   [renderProducts],
+  pricing:    [renderPricingProductSelect, renderPricing],
+  forecast:   [renderForecastMonthsGrid, renderDemandTimeline],
+  sets:       [renderSetConfigsList, renderSetsMonthlyGrid, renderSetsTimelines,
+               // Only initialise set lines if none exist — don't clobber an in-progress edit
+               ()=>{ if(!setLines.length) renderSetLines(); }],
+  stock:      [renderStockTable],
+  projection: [renderStockTimeline],
+  orders:     [renderOrders, ()=>{
+                 if(!orderLines.length) orderLines=[{productId:'',qty:1,cost:0}];
+                 renderOrderLines();
+               }],
+  recommended:[_renderSchedule],   // re-render only; use Refresh button to recalculate
+  financials: [renderFinancials],
+  changelog:  [renderChangelog]
+};
+const TAB_NAMES=Object.keys(TAB_RENDERERS);   // same order as the nav buttons
+let _activeTab='dashboard';
+
 function renderAll(){
-  renderProducts();
-  renderPricingProductSelect();
-  renderPricing();
-  renderForecastMonthsGrid();
-  renderDemandTimeline();
-  renderSetConfigsList();
-  renderSetsMonthlyGrid();
-  renderSetsTimelines();
-  // Only initialise set lines if none exist — don't clobber an in-progress edit
-  if(!setLines.length) renderSetLines();
-  renderStockTable();
-  renderStockTimeline();
-  renderOrders();
-  renderDashboard();
-  _renderSchedule();   // re-render only; use Refresh button to recalculate
-  renderFinancials();
-  renderChangelog();
+  TAB_RENDERERS[_activeTab].forEach(fn=>fn());
   _updateProbDateLabel();
-  if(!orderLines.length) orderLines=[{productId:'',qty:1,cost:0}];
-  renderOrderLines();
 }
 
 // ══════════════════════════════════════════════════════════
