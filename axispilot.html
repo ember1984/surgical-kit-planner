@@ -354,23 +354,11 @@ tbody tr:hover td{background:var(--surface2)}
       </div>
     </div>
   </div>
-  <div class="card">
-    <div class="card-head">
-      <h3>Stock vs 3-Month Usage</h3>
-      <div class="ml chart-legend">
-        <span><i style="background:var(--blue)"></i>Current stock</span>
-        <span><i style="background:var(--amber)"></i>3-month usage</span>
-      </div>
-      <div class="btn-row">
-        <button class="btn ghost sm" onclick="copyStockUsageChart()" title="Copy the chart as an image, ready to paste into PowerPoint">📋 Copy Image</button>
-        <button class="btn ghost sm" onclick="printStockUsageChart()">🖨 Print</button>
-      </div>
-    </div>
-    <div class="card-body">
-      <p class="help" style="margin:0 0 10px">Products with a non-zero usage probability. 3-month usage = forecast cages × usage probability, this month and the next two.</p>
-      <div id="stock-usage-chart" class="chart-wrap"></div>
-    </div>
+  <div class="page-title" style="margin:24px 0 12px">Stock vs 3-Month Usage
+    <span>Products with a non-zero usage probability · usage = forecast cages × probability, this month and the next two</span>
+    <button class="btn ghost sm" style="margin-left:auto" onclick="printStockUsageChart()">🖨 Print All</button>
   </div>
+  <div id="stock-usage-charts"></div>
 </div>
 
 <!-- ══════════════ PROJECTION ══════════════ -->
@@ -1609,17 +1597,48 @@ function renderStockTable(){
     </tr>
   `).join('');
 }
-// Grouped bar chart: current stock vs expected usage over the next 3 months, for products
-// with a non-zero usage probability. Follows the stock table's sort order.
-function renderStockUsageChart(){
-  const el=document.getElementById('stock-usage-chart');
-  if(!el) return;
-  const prods=sortArr(activeProducts().filter(p=>(p.prob||0)>0), sortState.stock.col, sortState.stock.dir);
-  if(!prods.length){ el.innerHTML='<div class="empty">No products with a usage probability above 0%.</div>'; return; }
-  const next3=monthList(3);
-  const rows=prods.map(p=>({p, stock:p.stock||0,
-    usage:next3.reduce((s,m)=>s+(S.forecast[m.key]||0)*p.prob,0)}));
+// Grouped bar charts: current stock vs expected usage over the next 3 months, one per product
+// family, for products with a non-zero usage probability. Follows the stock table's sort order.
+// Product type is free text, so match it loosely: case, spaces and a plural "s" are ignored.
+const STOCK_USAGE_GROUPS=[
+  {key:'endplate',   label:'Endplates'},
+  {key:'core',       label:'Cores'},
+  {key:'lockingcap', label:'Locking Caps'},
+  {key:'screw',      label:'Screws'}
+];
+const _typeKey=t=>(t||'').toLowerCase().replace(/[^a-z]/g,'').replace(/s$/,'');
 
+function renderStockUsageChart(){
+  const wrap=document.getElementById('stock-usage-charts');
+  if(!wrap) return;
+  if(wrap.children.length!==STOCK_USAGE_GROUPS.length){
+    wrap.innerHTML=STOCK_USAGE_GROUPS.map(g=>`
+      <div class="card">
+        <div class="card-head">
+          <h3>${g.label}</h3>
+          <div class="ml chart-legend">
+            <span><i style="background:var(--blue)"></i>Current stock</span>
+            <span><i style="background:var(--amber)"></i>3-month usage</span>
+          </div>
+          <div class="btn-row">
+            <button class="btn ghost sm" onclick="copyStockUsageChart('${g.key}')" title="Copy the chart as an image, ready to paste into PowerPoint">📋 Copy Image</button>
+            <button class="btn ghost sm" onclick="printStockUsageChart('${g.key}')">🖨 Print</button>
+          </div>
+        </div>
+        <div class="card-body"><div id="stock-usage-chart-${g.key}" class="chart-wrap"></div></div>
+      </div>`).join('');
+  }
+  const next3=monthList(3);
+  const prods=sortArr(activeProducts().filter(p=>(p.prob||0)>0), sortState.stock.col, sortState.stock.dir);
+  STOCK_USAGE_GROUPS.forEach(g=>{
+    const el=document.getElementById('stock-usage-chart-'+g.key);
+    const rows=prods.filter(p=>_typeKey(p.type)===g.key).map(p=>({p, stock:p.stock||0,
+      usage:next3.reduce((s,m)=>s+(S.forecast[m.key]||0)*p.prob,0)}));
+    el.innerHTML=rows.length?_stockUsageSvg(rows,el.clientWidth||800,g.label)
+      :`<div class="empty">No ${g.label.toLowerCase()} with a usage probability above 0%.</div>`;
+  });
+}
+function _stockUsageSvg(rows,width,label){
   const maxV=Math.max(1,...rows.map(r=>Math.max(r.stock,r.usage)));
   const mag=Math.pow(10,Math.floor(Math.log10(maxV/4)));
   const step=[1,2,5,10].map(f=>f*mag).find(s=>maxV/s<=5);
@@ -1627,7 +1646,7 @@ function renderStockUsageChart(){
 
   // Fill the card width; scroll horizontally once products no longer fit at the minimum slot
   const H=240, padT=10, padL=44, padB=70, gap=2;
-  const slot=Math.max(36,((el.clientWidth||800)-padL-10)/rows.length);
+  const slot=Math.max(36,(width-padL-10)/rows.length);
   const bw=Math.min(28,(slot-gap-12)/2);
   const W=padL+rows.length*slot+10;
   const y=v=>padT+H-(v/top)*H;
@@ -1645,13 +1664,14 @@ function renderStockUsageChart(){
          `<rect x="${x2}" y="${y(r.usage)}" width="${bw}" height="${H+padT-y(r.usage)}" rx="2" fill="var(--amber)"><title>${name}\n3-month usage: ${fmt(r.usage)}</title></rect>`+
          `<text transform="translate(${cx+3},${padT+H+8}) rotate(-45)" text-anchor="end">${esc(r.p.code)}</text>`;
   });
-  el.innerHTML=`<svg width="${W}" height="${padT+H+padB}" role="img" aria-label="Current stock versus 3-month usage by product">${svg}</svg>`;
+  return `<svg width="${W}" height="${padT+H+padB}" role="img" aria-label="${label}: current stock versus 3-month usage by product">${svg}</svg>`;
 }
 // The on-screen chart takes its colours and fonts from page CSS, which a print window or a
 // pasted image can't see. Build a self-contained copy with title, legend and values inlined.
-function _stockUsageChartStandalone(){
-  const src=document.querySelector('#stock-usage-chart svg');
+function _stockUsageChartStandalone(key){
+  const src=document.querySelector(`#stock-usage-chart-${key} svg`);
   if(!src) return null;
+  const title=STOCK_USAGE_GROUPS.find(g=>g.key===key).label+' — Stock vs 3-Month Usage';
   const css=getComputedStyle(document.documentElement);
   const resolve=v=>v&&v.replace(/var\((--[\w-]+)\)/g,(_,n)=>css.getPropertyValue(n).trim());
   const chart=src.cloneNode(true);
@@ -1663,23 +1683,23 @@ function _stockUsageChartStandalone(){
     t.setAttribute('font-family',"'IBM Plex Mono',Consolas,monospace");
     t.setAttribute('font-size','10');
   });
-  const w=+src.getAttribute('width'), h=+src.getAttribute('height'), head=44;
+  const w=Math.max(+src.getAttribute('width'),600), h=+src.getAttribute('height'), head=44;
   const blue=resolve('var(--blue)'), amber=resolve('var(--amber)'), ink=resolve('var(--ink)');
   const sans="'IBM Plex Sans',Arial,sans-serif";
   const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h+head}" viewBox="0 0 ${w} ${h+head}">
     <rect width="100%" height="100%" fill="#ffffff"/>
-    <text x="10" y="20" font-family="${sans}" font-size="14" font-weight="700" fill="${ink}">Stock vs 3-Month Usage</text>
+    <text x="10" y="20" font-family="${sans}" font-size="14" font-weight="700" fill="${ink}">${esc(title)}</text>
     <rect x="${w-230}" y="10" width="10" height="10" rx="2" fill="${blue}"/>
     <text x="${w-215}" y="19" font-family="${sans}" font-size="11" fill="${ink}">Current stock</text>
     <rect x="${w-120}" y="10" width="10" height="10" rx="2" fill="${amber}"/>
     <text x="${w-105}" y="19" font-family="${sans}" font-size="11" fill="${ink}">3-month usage</text>
     <g transform="translate(0,${head})">${[...chart.childNodes].map(n=>new XMLSerializer().serializeToString(n)).join('')}</g>
   </svg>`;
-  return {svg,w,h:h+head};
+  return {svg,w,h:h+head,title};
 }
-async function copyStockUsageChart(){
-  const c=_stockUsageChartStandalone();
-  if(!c){ _toast('Nothing to copy — no products with a usage probability.'); return; }
+async function copyStockUsageChart(key){
+  const c=_stockUsageChartStandalone(key);
+  if(!c){ _toast('Nothing to copy — no products in this chart.'); return; }
   const scale=2;   // render at 2× so it stays sharp when resized on a slide
   const img=new Image();
   img.src='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(c.svg);
@@ -1690,33 +1710,36 @@ async function copyStockUsageChart(){
   const blob=await new Promise(r=>canvas.toBlob(r,'image/png'));
   try{
     await navigator.clipboard.write([new ClipboardItem({'image/png':blob})]);
-    _toast('Chart copied — paste it into PowerPoint with Ctrl+V.');
+    _toast(`${c.title.split(' — ')[0]} chart copied — paste it into PowerPoint with Ctrl+V.`);
   }catch(e){
     // Clipboard blocked (e.g. browser permission) — download the PNG instead
     const a=document.createElement('a');
     a.href=URL.createObjectURL(blob);
-    a.download=`stock-vs-usage-${new Date().toISOString().slice(0,10)}.png`;
+    a.download=`${key}-stock-vs-usage-${new Date().toISOString().slice(0,10)}.png`;
     a.click();
     setTimeout(()=>URL.revokeObjectURL(a.href),1000);
     _toast('Couldn\'t access the clipboard — chart downloaded as a PNG instead.');
   }
 }
-function printStockUsageChart(){
-  const c=_stockUsageChartStandalone();
-  if(!c){ _toast('Nothing to print — no products with a usage probability.'); return; }
+// Print one chart (key) or, with no key, every chart that has products — one per page
+function printStockUsageChart(key){
+  const charts=(key?[key]:STOCK_USAGE_GROUPS.map(g=>g.key)).map(_stockUsageChartStandalone).filter(Boolean);
+  if(!charts.length){ _toast('Nothing to print — no products with a usage probability.'); return; }
   const today=new Date().toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'});
   const w=window.open('','_blank','width=1200,height=800');
   w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8">
-  <title>Stock vs 3-Month Usage — ${today}</title>
+  <title>${esc(key?charts[0].title:'Stock vs 3-Month Usage')} — ${today}</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;700&display=swap');
     body{margin:0;padding:16px;font-family:'IBM Plex Sans',sans-serif;color:#1a1814}
+    .chart{break-after:page;margin-bottom:24px}
+    .chart:last-child{break-after:auto}
     .sub{font-size:11px;color:#8a8070;margin:0 0 8px 10px}
     svg{max-width:100%;height:auto}
     @media print{body{padding:0}@page{size:landscape;margin:10mm}}
   </style></head><body>
-  ${c.svg}
-  <div class="sub">3-month usage = forecast cages × usage probability, this month and the next two · Printed ${today}</div>
+  ${charts.map(c=>`<div class="chart">${c.svg}
+  <div class="sub">3-month usage = forecast cages × usage probability, this month and the next two · Printed ${today}</div></div>`).join('')}
   <script>window.onload=function(){window.print();}<\/script>
   </body></html>`);
   w.document.close();
