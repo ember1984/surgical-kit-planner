@@ -118,9 +118,7 @@ tbody tr:hover td{background:var(--surface2)}
 .btn-active{background:var(--accent) !important;color:#fff !important;border-color:var(--accent) !important}
 
 /* ── CHARTS ── */
-.chart-wrap{overflow-x:auto}
-.chart-wrap svg{display:block}
-.chart-wrap text{font-family:var(--mono);font-size:10px;fill:var(--muted)}
+.chart-wrap svg{display:block;height:auto}
 .chart-legend{display:flex;gap:14px;font-size:.72rem;color:var(--muted)}
 .chart-legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
 
@@ -1634,37 +1632,87 @@ function renderStockUsageChart(){
     const el=document.getElementById('stock-usage-chart-'+g.key);
     const rows=prods.filter(p=>_typeKey(p.type)===g.key).map(p=>({p, stock:p.stock||0,
       usage:next3.reduce((s,m)=>s+(S.forecast[m.key]||0)*p.prob,0)}));
-    el.innerHTML=rows.length?_stockUsageSvg(rows,el.clientWidth||800,g.label)
+    el.innerHTML=rows.length?_stockUsageSvg(rows,g.label)
       :`<div class="empty">No ${g.label.toLowerCase()} with a usage probability above 0%.</div>`;
   });
 }
-function _stockUsageSvg(rows,width,label){
+// Charts are drawn on a fixed 1280-wide canvas and scaled to fit, so the exported image
+// (chart + title strip) is exactly 16:9 — a full PowerPoint slide.
+const CHART_W=1280, CHART_HEAD=60, CHART_H=720-CHART_HEAD;
+const CHART_MONO="'IBM Plex Mono',Consolas,monospace", CHART_SANS="'IBM Plex Sans',Arial,sans-serif";
+
+// Greedy word-wrap into at most maxLines lines of ~cpl characters, ellipsis on overflow
+function _wrapText(s,cpl,maxLines){
+  const lines=[]; let cur='';
+  for(const w of s.split(/\s+/).filter(Boolean)){
+    if(!cur) cur=w; else if((cur+' '+w).length<=cpl) cur+=' '+w; else { lines.push(cur); cur=w; }
+  }
+  if(cur) lines.push(cur);
+  const out=lines.slice(0,maxLines).map(l=>l.length>cpl?l.slice(0,cpl-1)+'…':l);
+  if(lines.length>maxLines) out[maxLines-1]=out[maxLines-1].slice(0,cpl-1).replace(/…?$/,'…');
+  return out;
+}
+
+function _stockUsageSvg(rows,label){
+  const W=CHART_W, padL=60, padR=16, gap=3, n=rows.length;
+  const slot=(W-padL-padR)/n;
+  const bw=Math.min(56,Math.max(3,(slot*0.72-gap)/2));
+  const flat=slot>=120;       // room for horizontal code + wrapped description under each group
+  const vertVals=bw<32;       // too narrow for horizontal value labels — stand them on end
+  const fmt=v=>v>=100?Math.round(v):Math.round(v*10)/10;
+
+  // X-axis labels: code + description
+  let labels, padB;
+  if(flat){
+    const cpl=Math.floor((slot-10)/6.6);
+    labels=rows.map(r=>({code:r.p.code, lines:_wrapText(r.p.desc||'',cpl,3)}));
+    padB=40+16*Math.max(1,...labels.map(l=>l.lines.length));
+  }else{
+    // Vertical labels — angled ones run off the left edge on the first few products
+    const max=40;
+    labels=rows.map(r=>{
+      const d=r.p.desc||'', room=max-r.p.code.length-3;
+      return {code:r.p.code, desc:d.length>room?d.slice(0,Math.max(0,room-1))+'…':d};
+    });
+    const longest=Math.max(...labels.map(l=>l.code.length+(l.desc?l.desc.length+3:0)));
+    padB=Math.min(250,20+longest*5.8);
+  }
+  const padT=vertVals?56:30;
+  const H=CHART_H-padT-padB;
+
   const maxV=Math.max(1,...rows.map(r=>Math.max(r.stock,r.usage)));
   const mag=Math.pow(10,Math.floor(Math.log10(maxV/4)));
   const step=[1,2,5,10].map(f=>f*mag).find(s=>maxV/s<=5);
   const top=Math.ceil(maxV/step)*step;
-
-  // Fill the card width; scroll horizontally once products no longer fit at the minimum slot
-  const H=240, padT=10, padL=44, padB=70, gap=2;
-  const slot=Math.max(36,(width-padL-10)/rows.length);
-  const bw=Math.min(28,(slot-gap-12)/2);
-  const W=padL+rows.length*slot+10;
   const y=v=>padT+H-(v/top)*H;
-  const fmt=v=>Math.round(v*10)/10;
 
   let svg='';
   for(let v=0;v<=top+1e-9;v+=step){
-    svg+=`<line x1="${padL}" x2="${W}" y1="${y(v)}" y2="${y(v)}" stroke="var(--border)" stroke-width="1"/>`+
-         `<text x="${padL-6}" y="${y(v)+3}" text-anchor="end">${fmt(v)}</text>`;
+    svg+=`<line x1="${padL}" x2="${W-padR}" y1="${y(v)}" y2="${y(v)}" stroke="var(--border)" stroke-width="1"/>`+
+         `<text x="${padL-8}" y="${y(v)+4}" text-anchor="end" font-family="${CHART_MONO}" font-size="13" fill="var(--muted)">${fmt(v)}</text>`;
   }
+  const bar=(x,v,colour,name,what)=>{
+    const vx=x+bw/2, vy=y(v)-6;
+    const val=vertVals
+      ?`<text transform="translate(${vx+4},${vy}) rotate(-90)" font-family="${CHART_MONO}" font-size="12" fill="var(--ink)">${fmt(v)}</text>`
+      :`<text x="${vx}" y="${vy}" text-anchor="middle" font-family="${CHART_MONO}" font-size="13" font-weight="600" fill="var(--ink)">${fmt(v)}</text>`;
+    return `<rect x="${x}" y="${y(v)}" width="${bw}" height="${padT+H-y(v)}" rx="2" fill="${colour}"><title>${name}\n${what}: ${fmt(v)}</title></rect>${val}`;
+  };
   rows.forEach((r,i)=>{
-    const cx=padL+i*slot+slot/2, x1=cx-bw-gap/2, x2=cx+gap/2;
+    const cx=padL+i*slot+slot/2, l=labels[i];
     const name=`${esc(r.p.code)} — ${esc(r.p.desc||'')}`;
-    svg+=`<rect x="${x1}" y="${y(r.stock)}" width="${bw}" height="${H+padT-y(r.stock)}" rx="2" fill="var(--blue)"><title>${name}\nCurrent stock: ${fmt(r.stock)}</title></rect>`+
-         `<rect x="${x2}" y="${y(r.usage)}" width="${bw}" height="${H+padT-y(r.usage)}" rx="2" fill="var(--amber)"><title>${name}\n3-month usage: ${fmt(r.usage)}</title></rect>`+
-         `<text transform="translate(${cx+3},${padT+H+8}) rotate(-45)" text-anchor="end">${esc(r.p.code)}</text>`;
+    svg+=bar(cx-bw-gap/2,r.stock,'var(--blue)',name,'Current stock')+
+         bar(cx+gap/2,r.usage,'var(--amber)',name,'3-month usage');
+    if(flat){
+      svg+=`<text x="${cx}" y="${padT+H+20}" text-anchor="middle" font-family="${CHART_MONO}" font-size="13" font-weight="600" fill="var(--ink)">${esc(l.code)}</text>`+
+           l.lines.map((ln,j)=>`<text x="${cx}" y="${padT+H+38+j*16}" text-anchor="middle" font-family="${CHART_SANS}" font-size="12" fill="var(--muted)">${esc(ln)}</text>`).join('');
+    }else{
+      svg+=`<text transform="translate(${cx+4},${padT+H+10}) rotate(-90)" text-anchor="end" font-size="12">`+
+           `<tspan font-family="${CHART_MONO}" font-weight="600" fill="var(--ink)">${esc(l.code)}</tspan>`+
+           (l.desc?`<tspan font-family="${CHART_SANS}" fill="var(--muted)"> · ${esc(l.desc)}</tspan>`:'')+`</text>`;
+    }
   });
-  return `<svg width="${W}" height="${padT+H+padB}" role="img" aria-label="${label}: current stock versus 3-month usage by product">${svg}</svg>`;
+  return `<svg viewBox="0 0 ${W} ${CHART_H}" width="100%" role="img" aria-label="${label}: current stock versus 3-month usage by product">${svg}</svg>`;
 }
 // The on-screen chart takes its colours and fonts from page CSS, which a print window or a
 // pasted image can't see. Build a self-contained copy with title, legend and values inlined.
@@ -1678,21 +1726,16 @@ function _stockUsageChartStandalone(key){
   chart.querySelectorAll('[fill],[stroke]').forEach(n=>{
     ['fill','stroke'].forEach(a=>{ if(n.hasAttribute(a)) n.setAttribute(a,resolve(n.getAttribute(a))); });
   });
-  chart.querySelectorAll('text').forEach(t=>{
-    t.setAttribute('fill',resolve('var(--muted)'));
-    t.setAttribute('font-family',"'IBM Plex Mono',Consolas,monospace");
-    t.setAttribute('font-size','10');
-  });
-  const w=Math.max(+src.getAttribute('width'),600), h=+src.getAttribute('height'), head=44;
+  const w=CHART_W, h=CHART_H, head=CHART_HEAD;
   const blue=resolve('var(--blue)'), amber=resolve('var(--amber)'), ink=resolve('var(--ink)');
-  const sans="'IBM Plex Sans',Arial,sans-serif";
+  const sans=CHART_SANS;
   const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h+head}" viewBox="0 0 ${w} ${h+head}">
     <rect width="100%" height="100%" fill="#ffffff"/>
-    <text x="10" y="20" font-family="${sans}" font-size="14" font-weight="700" fill="${ink}">${esc(title)}</text>
-    <rect x="${w-230}" y="10" width="10" height="10" rx="2" fill="${blue}"/>
-    <text x="${w-215}" y="19" font-family="${sans}" font-size="11" fill="${ink}">Current stock</text>
-    <rect x="${w-120}" y="10" width="10" height="10" rx="2" fill="${amber}"/>
-    <text x="${w-105}" y="19" font-family="${sans}" font-size="11" fill="${ink}">3-month usage</text>
+    <text x="20" y="38" font-family="${sans}" font-size="22" font-weight="700" fill="${ink}">${esc(title)}</text>
+    <rect x="${w-320}" y="24" width="14" height="14" rx="2" fill="${blue}"/>
+    <text x="${w-300}" y="36" font-family="${sans}" font-size="15" fill="${ink}">Current stock</text>
+    <rect x="${w-170}" y="24" width="14" height="14" rx="2" fill="${amber}"/>
+    <text x="${w-150}" y="36" font-family="${sans}" font-size="15" fill="${ink}">3-month usage</text>
     <g transform="translate(0,${head})">${[...chart.childNodes].map(n=>new XMLSerializer().serializeToString(n)).join('')}</g>
   </svg>`;
   return {svg,w,h:h+head,title};
@@ -1700,7 +1743,7 @@ function _stockUsageChartStandalone(key){
 async function copyStockUsageChart(key){
   const c=_stockUsageChartStandalone(key);
   if(!c){ _toast('Nothing to copy — no products in this chart.'); return; }
-  const scale=2;   // render at 2× so it stays sharp when resized on a slide
+  const scale=1.5;   // 1920×1080 — full-HD slide resolution, stays sharp when resized
   const img=new Image();
   img.src='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(c.svg);
   await img.decode();
