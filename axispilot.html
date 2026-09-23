@@ -1617,7 +1617,7 @@ function renderStockUsageChart(){
           <div class="ml chart-legend">
             <span><i style="background:var(--blue)"></i>Current stock</span>
             <span><i style="background:var(--amber)"></i>3-month usage</span>
-            <span title="Units committed to sets over the next 3 months plus that period's usage"><i style="background:var(--green)"></i>Min stock + usage</span>
+            <span title="Peak units committed to sets in any one of the next 3 months, plus that period's usage"><i style="background:var(--green)"></i>Min stock + usage</span>
           </div>
           <div class="btn-row">
             <button class="btn ghost sm" onclick="copyStockUsageChart('${g.key}')" title="Copy the chart as an image, ready to paste into PowerPoint">📋 Copy Image</button>
@@ -1628,14 +1628,14 @@ function renderStockUsageChart(){
       </div>`).join('');
   }
   const next3=monthList(3);
-  const setUnits=_setsUnitsOverMonths(next3);
+  const setUnits=_setsPeakUnits(next3);
   const prods=sortArr(activeProducts().filter(p=>(p.prob||0)>0), sortState.stock.col, sortState.stock.dir);
   STOCK_USAGE_GROUPS.forEach(g=>{
     const el=document.getElementById('stock-usage-chart-'+g.key);
     const rows=prods.filter(p=>_typeKey(p.type)===g.key).map(p=>{
       const usage=next3.reduce((s,m)=>s+(S.forecast[m.key]||0)*p.prob,0);
-      // Required = set commitments over the same 3 months + the usage they're paired with.
-      // Sets only: the projection's MIN already includes a month's usage, which would double-count.
+      // Required = the busiest month's set commitments + usage over the same 3 months. Sets only:
+      // the projection's MIN already includes a month's usage, which would double-count.
       return {p, stock:p.stock||0, usage, required:(setUnits[p.id]||0)+usage};
     });
     el.innerHTML=rows.length?_stockUsageSvg(rows,g.label)
@@ -1647,17 +1647,21 @@ function renderStockUsageChart(){
 const CHART_W=1280, CHART_HEAD=60, CHART_H=720-CHART_HEAD;
 const CHART_MONO="'IBM Plex Mono',Consolas,monospace", CHART_SANS="'IBM Plex Sans',Arial,sans-serif";
 
-// Units committed to sets over the given months: Σ sets (planned × qty in set)
-function _setsUnitsOverMonths(months){
-  const out={};
+// Peak units committed to sets in any one of the given months: the busiest month's
+// Σ sets (planned × qty in set), not the total across the months
+function _setsPeakUnits(months){
+  const byMonth={};   // {productId: {monthKey: units}}
   (S.sets||[]).forEach(s=>s.lines.forEach(l=>{
     const p=S.products.find(x=>x.id===l.productId);
     if(!p||p.suppressed) return;
+    if(!byMonth[p.id]) byMonth[p.id]={};
     months.forEach(m=>{
       const planned=((S.setsPlanned||{})[s.id]||{})[m.key]||0;
-      out[p.id]=(out[p.id]||0)+planned*l.qty;
+      byMonth[p.id][m.key]=(byMonth[p.id][m.key]||0)+planned*l.qty;
     });
   }));
+  const out={};
+  Object.entries(byMonth).forEach(([id,m])=>{ out[id]=Math.max(0,...Object.values(m)); });
   return out;
 }
 
