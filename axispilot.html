@@ -1617,6 +1617,7 @@ function renderStockUsageChart(){
           <div class="ml chart-legend">
             <span><i style="background:var(--blue)"></i>Current stock</span>
             <span><i style="background:var(--amber)"></i>3-month usage</span>
+            <span title="Units committed to sets over the next 3 months plus that period's usage"><i style="background:var(--green)"></i>Min stock + usage</span>
           </div>
           <div class="btn-row">
             <button class="btn ghost sm" onclick="copyStockUsageChart('${g.key}')" title="Copy the chart as an image, ready to paste into PowerPoint">📋 Copy Image</button>
@@ -1627,11 +1628,16 @@ function renderStockUsageChart(){
       </div>`).join('');
   }
   const next3=monthList(3);
+  const setUnits=_setsUnitsOverMonths(next3);
   const prods=sortArr(activeProducts().filter(p=>(p.prob||0)>0), sortState.stock.col, sortState.stock.dir);
   STOCK_USAGE_GROUPS.forEach(g=>{
     const el=document.getElementById('stock-usage-chart-'+g.key);
-    const rows=prods.filter(p=>_typeKey(p.type)===g.key).map(p=>({p, stock:p.stock||0,
-      usage:next3.reduce((s,m)=>s+(S.forecast[m.key]||0)*p.prob,0)}));
+    const rows=prods.filter(p=>_typeKey(p.type)===g.key).map(p=>{
+      const usage=next3.reduce((s,m)=>s+(S.forecast[m.key]||0)*p.prob,0);
+      // Required = set commitments over the same 3 months + the usage they're paired with.
+      // Sets only: the projection's MIN already includes a month's usage, which would double-count.
+      return {p, stock:p.stock||0, usage, required:(setUnits[p.id]||0)+usage};
+    });
     el.innerHTML=rows.length?_stockUsageSvg(rows,g.label)
       :`<div class="empty">No ${g.label.toLowerCase()} with a usage probability above 0%.</div>`;
   });
@@ -1640,6 +1646,20 @@ function renderStockUsageChart(){
 // (chart + title strip) is exactly 16:9 — a full PowerPoint slide.
 const CHART_W=1280, CHART_HEAD=60, CHART_H=720-CHART_HEAD;
 const CHART_MONO="'IBM Plex Mono',Consolas,monospace", CHART_SANS="'IBM Plex Sans',Arial,sans-serif";
+
+// Units committed to sets over the given months: Σ sets (planned × qty in set)
+function _setsUnitsOverMonths(months){
+  const out={};
+  (S.sets||[]).forEach(s=>s.lines.forEach(l=>{
+    const p=S.products.find(x=>x.id===l.productId);
+    if(!p||p.suppressed) return;
+    months.forEach(m=>{
+      const planned=((S.setsPlanned||{})[s.id]||{})[m.key]||0;
+      out[p.id]=(out[p.id]||0)+planned*l.qty;
+    });
+  }));
+  return out;
+}
 
 // Greedy word-wrap into at most maxLines lines of ~cpl characters, ellipsis on overflow
 function _wrapText(s,cpl,maxLines){
@@ -1656,7 +1676,7 @@ function _wrapText(s,cpl,maxLines){
 function _stockUsageSvg(rows,label){
   const W=CHART_W, padL=60, padR=16, gap=3, n=rows.length;
   const slot=(W-padL-padR)/n;
-  const bw=Math.min(56,Math.max(3,(slot*0.72-gap)/2));
+  const bw=Math.min(44,Math.max(3,(slot*0.76-2*gap)/3));
   const flat=slot>=120;       // room for horizontal code + wrapped description under each group
   const vertVals=bw<32;       // too narrow for horizontal value labels — stand them on end
   const fmt=v=>v>=100?Math.round(v):Math.round(v*10)/10;
@@ -1680,7 +1700,7 @@ function _stockUsageSvg(rows,label){
   const H=CHART_H-padT-padB;
 
   // Nice Y scale that hugs the data, leaving just enough headroom for the value labels
-  const maxV=Math.max(1,...rows.map(r=>Math.max(r.stock,r.usage)));
+  const maxV=Math.max(1,...rows.map(r=>Math.max(r.stock,r.usage,r.required)));
   const raw=maxV*(vertVals?1.12:1.07), rough=raw/6;
   const mag=Math.pow(10,Math.floor(Math.log10(rough)));
   const step=[1,2,2.5,5,10].map(f=>f*mag).find(s=>s>=rough);
@@ -1702,8 +1722,9 @@ function _stockUsageSvg(rows,label){
   rows.forEach((r,i)=>{
     const cx=padL+i*slot+slot/2, l=labels[i];
     const name=`${esc(r.p.code)} — ${esc(r.p.desc||'')}`;
-    svg+=bar(cx-bw-gap/2,r.stock,'var(--blue)',name,'Current stock')+
-         bar(cx+gap/2,r.usage,'var(--amber)',name,'3-month usage');
+    svg+=bar(cx-1.5*bw-gap,r.stock,'var(--blue)',name,'Current stock')+
+         bar(cx-0.5*bw,r.usage,'var(--amber)',name,'3-month usage')+
+         bar(cx+0.5*bw+gap,r.required,'var(--green)',name,'Min stock + 3-month usage');
     if(flat){
       svg+=`<text x="${cx}" y="${padT+H+20}" text-anchor="middle" font-family="${CHART_MONO}" font-size="13" font-weight="600" fill="var(--ink)">${esc(l.code)}</text>`+
            l.lines.map((ln,j)=>`<text x="${cx}" y="${padT+H+38+j*16}" text-anchor="middle" font-family="${CHART_SANS}" font-size="12" fill="var(--muted)">${esc(ln)}</text>`).join('');
@@ -1731,15 +1752,17 @@ function _stockUsageChartStandalone(key){
     ['fill','stroke'].forEach(a=>{ if(n.hasAttribute(a)) n.setAttribute(a,resolve(n.getAttribute(a))); });
   });
   const w=CHART_W, h=CHART_H, head=CHART_HEAD;
-  const blue=resolve('var(--blue)'), amber=resolve('var(--amber)'), ink=resolve('var(--ink)');
+  const blue=resolve('var(--blue)'), amber=resolve('var(--amber)'), green=resolve('var(--green)'), ink=resolve('var(--ink)');
   const sans=CHART_SANS;
   const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h+head}" viewBox="0 0 ${w} ${h+head}">
     <rect width="100%" height="100%" fill="#ffffff"/>
     <text x="20" y="38" font-family="${sans}" font-size="22" font-weight="700" fill="${ink}">${esc(title)}</text>
-    <rect x="${w-320}" y="24" width="14" height="14" rx="2" fill="${blue}"/>
-    <text x="${w-300}" y="36" font-family="${sans}" font-size="15" fill="${ink}">Current stock</text>
-    <rect x="${w-170}" y="24" width="14" height="14" rx="2" fill="${amber}"/>
-    <text x="${w-150}" y="36" font-family="${sans}" font-size="15" fill="${ink}">3-month usage</text>
+    <rect x="${w-560}" y="24" width="14" height="14" rx="2" fill="${blue}"/>
+    <text x="${w-540}" y="36" font-family="${sans}" font-size="15" fill="${ink}">Current stock</text>
+    <rect x="${w-410}" y="24" width="14" height="14" rx="2" fill="${amber}"/>
+    <text x="${w-390}" y="36" font-family="${sans}" font-size="15" fill="${ink}">3-month usage</text>
+    <rect x="${w-250}" y="24" width="14" height="14" rx="2" fill="${green}"/>
+    <text x="${w-230}" y="36" font-family="${sans}" font-size="15" fill="${ink}">Min stock + 3-month usage</text>
     <g transform="translate(0,${head})">${[...chart.childNodes].map(n=>new XMLSerializer().serializeToString(n)).join('')}</g>
   </svg>`;
   return {svg,w,h:h+head,title};
