@@ -404,7 +404,7 @@ tbody tr:hover td{background:var(--surface2)}
 
 <!-- ══════════════ ORDERS ══════════════ -->
 <div id="tab-orders" class="tab">
-  <div class="page-title">Purchase Orders</div>
+  <div class="page-title">Purchase Orders <span>All costs ex VAT</span></div>
 
   <div class="card">
     <div class="card-head"><h3 id="order-form-title">Create Order</h3></div>
@@ -459,7 +459,7 @@ tbody tr:hover td{background:var(--surface2)}
           <th class="sortable" onclick="setSort('orders','deliveryDate')">Delivery</th>
           <th class="sortable" onclick="setSort('orders','supplier')">Supplier</th>
           <th>Products</th>
-          <th class="sortable" onclick="setSort('orders','total')">Total (£)</th>
+          <th class="sortable" onclick="setSort('orders','total')">Total (£ ex VAT)</th>
           <th class="sortable" onclick="setSort('orders','status')">Status</th>
           <th>Actions</th>
         </tr></thead>
@@ -544,7 +544,7 @@ tbody tr:hover td{background:var(--surface2)}
 
 <!-- ══════════════ PRICING ══════════════ -->
 <div id="tab-pricing" class="tab">
-  <div class="page-title">Pricing <span>Supplier price rules — product or drawing-group qty breaks</span></div>
+  <div class="page-title">Pricing <span>Supplier price rules — product or drawing-group qty breaks · all prices ex VAT</span></div>
 
   <div class="card" style="margin-bottom:16px">
     <div class="card-head"><h3>Exchange Rates</h3><span style="font-size:.78rem;color:var(--muted);margin-left:8px">Prices entered in foreign currency are converted to GBP using these rates.</span></div>
@@ -641,7 +641,7 @@ tbody tr:hover td{background:var(--surface2)}
 
 <!-- ══════════════ RECOMMENDED ORDERS ══════════════ -->
 <div id="tab-recommended" class="tab">
-  <div class="page-title">Recommended Orders <span>Grouped to benefit from volume pricing</span></div>
+  <div class="page-title">Recommended Orders <span>Grouped to benefit from volume pricing · all costs ex VAT</span></div>
 
   <div class="card">
     <div class="card-head">
@@ -700,7 +700,7 @@ tbody tr:hover td{background:var(--surface2)}
 <!-- ══════════════ FINANCIALS ══════════════ -->
 <div id="tab-financials" class="tab">
   <div class="page-title" style="display:flex;align-items:center;justify-content:space-between">
-    <span>Financials <span style="font-size:.75rem;font-weight:400;color:var(--muted)">Committed spend and forecast purchasing pipeline</span></span>
+    <span>Financials <span style="font-size:.75rem;font-weight:400;color:var(--muted)">Committed spend and forecast purchasing pipeline · all figures ex VAT</span></span>
     <button class="btn ghost sm" onclick="exportFinancialsCSV()" title="Export forecast schedule as CSV" style="margin-left:auto">⬇ CSV</button>
     <button class="btn ghost sm" onclick="printFinancials()" title="Print financials report">🖨 Print</button>
   </div>
@@ -1962,9 +1962,9 @@ function printOrder(orderId){
     : '';
 
   const totalsBlock = `
-    <tr class="total-row"><td colspan="3"></td><td class="num label">Subtotal (GBP)</td><td class="num total-col">£${gbpTotal.toFixed(2)}</td><td></td>${hasReceived?`<td></td>${hasAccScrap?'<td></td><td></td>':''}`:''}
+    <tr class="total-row"><td colspan="3"></td><td class="num label">Subtotal (GBP, ex VAT)</td><td class="num total-col">£${gbpTotal.toFixed(2)}</td><td></td>${hasReceived?`<td></td>${hasAccScrap?'<td></td><td></td>':''}`:''}
     </tr>
-    ${fx?`<tr class="total-row"><td colspan="3"></td><td class="num label">Subtotal (${fx.currency})</td><td class="num total-col">${sym(fx.currency)}${fx.fxTotal.toFixed(2)}</td><td></td>${hasReceived?`<td></td>${hasAccScrap?'<td></td><td></td>':''}`:''}
+    ${fx?`<tr class="total-row"><td colspan="3"></td><td class="num label">Subtotal (${fx.currency}, ex VAT)</td><td class="num total-col">${sym(fx.currency)}${fx.fxTotal.toFixed(2)}</td><td></td>${hasReceived?`<td></td>${hasAccScrap?'<td></td><td></td>':''}`:''}
     </tr>`:''}
   `;
 
@@ -2064,7 +2064,7 @@ function printOrder(orderId){
       <div class="meta-value">${o.currency||'GBP'}${fx?` (${sym(fx.currency)}${fx.fxTotal.toFixed(2)} total)`:''}</div>
     </div>
     <div class="meta-cell">
-      <div class="meta-label">Order Value (GBP)</div>
+      <div class="meta-label">Order Value (GBP, ex VAT)</div>
       <div class="meta-value large">£${gbpTotal.toFixed(2)}</div>
     </div>
     ${o.notes?`<div class="meta-cell notes-cell">
@@ -2525,7 +2525,7 @@ function renderOrderLines(){
         +'<input type="text" value="'+esc(l.description||'')+'" placeholder="e.g. Document pack, Setup fee…" onchange="orderLines['+i+'].description=this.value"></div>'
         +'<div class="fld"><label>Qty'+delivBadge+'</label>'
         +'<input type="number" min="1" value="'+l.qty+'" onchange="orderLines['+i+'].qty=Math.max(parseFloat(this.value)||1,1)"></div>'
-        +'<div class="fld"><label>Unit Cost ('+lineCurrSymbol+lineCurrency+')</label>'
+        +'<div class="fld"><label>Unit Cost ('+lineCurrSymbol+lineCurrency+', ex VAT)</label>'
         +'<div style="display:flex;align-items:center;gap:4px"><input type="number" min="0" step="0.01" value="'+costVal+'" placeholder="0.00" onchange="_setLineCostFromInput('+i+',this.value)" style="flex:1">'+gbpHint+'</div></div>'
         +'<div class="fld"><label>Delivery Date <span style="font-weight:400;color:var(--muted)">(overrides order)</span></label>'
         +'<input type="date" value="'+(l.deliveryDate||'')+'" onchange="orderLines['+i+'].deliveryDate=this.value"></div>'
@@ -2560,7 +2560,7 @@ function renderOrderLines(){
       +'<option value="">— select —</option>'+opts+'</select></div>'
       +'<div class="fld"><label>Qty <span style="font-weight:400;color:var(--muted)">(min '+moq+')</span>'+delivBadge+'</label>'
       +'<input type="number" min="'+moq+'" value="'+l.qty+'" onchange="orderLines['+i+'].qty=Math.max(parseFloat(this.value)||0,'+(moq)+');_recalcFormLine('+i+')"></div>'
-      +'<div class="fld"><label>Unit Cost ('+_currSymbol+_orderCurrency+') <span style="font-weight:400;color:var(--muted)">(overridable)</span></label>'
+      +'<div class="fld"><label>Unit Cost ('+_currSymbol+_orderCurrency+', ex VAT) <span style="font-weight:400;color:var(--muted)">(overridable)</span></label>'
       +'<div style="display:flex;align-items:center;gap:4px"><input type="number" min="0" step="0.01" value="'+costVal+'" placeholder="0.00" onchange="_setLineCostFromInput('+i+',this.value)" style="flex:1">'+gbpHint+'</div></div>'
       +'<div class="fld"><label>Delivery Date <span style="font-weight:400;color:var(--muted)">(overrides order)</span></label>'
       +'<input type="date" value="'+(l.deliveryDate||'')+'" onchange="orderLines['+i+'].deliveryDate=this.value"></div>'
@@ -3497,7 +3497,7 @@ function _renderSchedule(){
     <div class="card-body">
       <div style="display:flex;gap:40px;flex-wrap:wrap;align-items:flex-end">
         <div><div style="font-size:.7rem;font-weight:600;text-transform:uppercase;color:var(--muted);margin-bottom:4px">Orders to Place</div><div style="font-size:1.6rem;font-weight:700">${totalOrders}</div></div>
-        <div><div style="font-size:.7rem;font-weight:600;text-transform:uppercase;color:var(--muted);margin-bottom:4px">Total Forecast Spend</div><div style="font-size:1.6rem;font-weight:700;font-family:var(--mono)">£${totalSpend.toFixed(2)}</div></div>
+        <div><div style="font-size:.7rem;font-weight:600;text-transform:uppercase;color:var(--muted);margin-bottom:4px">Total Forecast Spend (ex VAT)</div><div style="font-size:1.6rem;font-weight:700;font-family:var(--mono)">£${totalSpend.toFixed(2)}</div></div>
         <div><div style="font-size:.7rem;font-weight:600;text-transform:uppercase;color:var(--muted);margin-bottom:4px">Earliest Action Date</div><div style="font-size:1.6rem;font-weight:700">${earliestDate}${earliestBadge}</div></div>
       </div>
     </div>
@@ -3647,17 +3647,6 @@ function printFinancials(){
   const forecast = schedule.reduce((s,ev)=>s+ev.lines.reduce((ls,l)=>ls+l.lineCost,0),0);
   const pipeline = committed + forecast;
 
-  const _fxSummary = orders => {
-    const byCur={};
-    orders.forEach(o=>{const fx=_orderFxTotal(o);if(fx) byCur[fx.currency]=(byCur[fx.currency]||0)+fx.fxTotal;});
-    return Object.entries(byCur).map(([cur,amt])=>`${_fxSymbol(cur)}${amt.toFixed(2)}\u00a0${cur}`).join(' · ');
-  };
-  const _forecastFxSummary = () => {
-    const byCur={};
-    schedule.forEach(ev=>ev.lines.forEach(l=>{if(l.foreignPrice!=null&&l.ruleCurrency&&l.ruleCurrency!=='GBP') byCur[l.ruleCurrency]=(byCur[l.ruleCurrency]||0)+l.qty*l.foreignPrice;}));
-    return Object.entries(byCur).map(([cur,amt])=>`${_fxSymbol(cur)}${amt.toFixed(2)}\u00a0${cur}`).join(' · ');
-  };
-
   // ── Stats cards HTML ────────────────────────────────────
   const statCard = (label, value, colour, note) => `
     <div class="stat-card">
@@ -3704,14 +3693,12 @@ function printFinancials(){
           <td class="num red">${scrap>0?'£'+scrap.toFixed(2):'—'}</td>
         </tr>`;
       }).join('');
-      const subFx=_fxSummary(grp.orders.map(x=>x.o));
-      const subFxNote=subFx?`<div class="fx-note">${subFx}</div>`:'';
       const subOut=grp.subtotal-grp.subReceived;
       const subOutClass=subOut<0?'over':subOut===0?'muted':'amber';
       return `<tr class="month-row">
           <td class="month-label">${grp.label}</td>
           <td colspan="3"></td>
-          <td class="num bold">£${grp.subtotal.toFixed(2)}${subFxNote}</td>
+          <td class="num bold">£${grp.subtotal.toFixed(2)}</td>
           <td class="num bold green">${grp.subReceived>0?'£'+grp.subReceived.toFixed(2):'—'}</td>
           <td class="num bold ${subOutClass}">${subOut<0?`⚠ +£${Math.abs(subOut).toFixed(2)}`:'£'+subOut.toFixed(2)}</td>
           <td class="num bold green">${grp.subAcceptable>0?'£'+grp.subAcceptable.toFixed(2):'—'}</td>
@@ -3819,15 +3806,15 @@ function printFinancials(){
     <div class="fin-brand">Axis<span>Pilot</span></div>
     <div class="fin-title">
       <h1>Financials Report</h1>
-      <div class="sub">Committed spend &amp; forecast purchasing pipeline &nbsp;·&nbsp; Printed ${today}</div>
+      <div class="sub">Committed spend &amp; forecast purchasing pipeline &nbsp;·&nbsp; All figures ex VAT &nbsp;·&nbsp; Printed ${today}</div>
     </div>
   </div>
 
   <div class="stats-row">
-    ${statCard('Committed (Pending &amp; Partial)', committed, 'var(--amber)', _fxSummary(pending))}
-    ${statCard('Forecast (Scheduled)', forecast, 'var(--blue)', _forecastFxSummary())}
-    ${statCard('Received (${thisYear})', receivedThisYear, 'var(--green)', _fxSummary(receivedOrders))}
-    ${statCard('Total Pipeline', pipeline, 'var(--ink)', '')}
+    ${statCard('Committed (Pending &amp; Partial)', committed, 'var(--amber)', 'ex VAT')}
+    ${statCard('Forecast (Scheduled)', forecast, 'var(--blue)', 'ex VAT')}
+    ${statCard('Received (${thisYear})', receivedThisYear, 'var(--green)', 'ex VAT')}
+    ${statCard('Total Pipeline', pipeline, 'var(--ink)', 'ex VAT')}
   </div>
 
   <div class="section-head">Committed Spend — Pending &amp; Partial Orders by Delivery Month</div>
@@ -3892,7 +3879,7 @@ function exportFinancialsCSV(){
       'Delivery Month': delivMonth,
       'Supplier': suppliers,
       'Products': products,
-      'Est Amount in GBP': evTotal.toFixed(2)
+      'Est Amount in GBP (ex VAT)': evTotal.toFixed(2)
     };
   });
   const blob = new Blob([toCSV(rows)],{type:'text/csv'});
@@ -3923,18 +3910,6 @@ function renderFinancials(){
   const forecast = schedule.reduce((s, ev) => s + ev.lines.reduce((ls, l) => ls + l.lineCost, 0), 0);
   const pipeline = committed + forecast;
 
-  // Foreign currency summaries
-  const _fxSummary = orders => {
-    const byCur = {};
-    orders.forEach(o => { const fx=_orderFxTotal(o); if(fx) byCur[fx.currency]=(byCur[fx.currency]||0)+fx.fxTotal; });
-    return Object.entries(byCur).map(([cur,amt])=>`${_fxSymbol(cur)}${amt.toFixed(2)}\u00a0${cur}`).join(' · ');
-  };
-  const _forecastFxSummary = () => {
-    const byCur = {};
-    schedule.forEach(ev=>ev.lines.forEach(l=>{ if(l.foreignPrice!=null&&l.ruleCurrency&&l.ruleCurrency!=='GBP') byCur[l.ruleCurrency]=(byCur[l.ruleCurrency]||0)+l.qty*l.foreignPrice; }));
-    return Object.entries(byCur).map(([cur,amt])=>`${_fxSymbol(cur)}${amt.toFixed(2)}\u00a0${cur}`).join(' · ');
-  };
-
   // Stats row
   const stat = (label, value, colour, note) => `
     <div class="card" style="flex:1;min-width:160px;margin:0">
@@ -3945,10 +3920,10 @@ function renderFinancials(){
       </div>
     </div>`;
   statsRow.innerHTML =
-    stat('Committed (Pending &amp; Partial)', committed, 'var(--amber)', _fxSummary(pending)) +
-    stat('Forecast (Scheduled)', forecast, 'var(--blue)', _forecastFxSummary()) +
-    stat('Received (This Year)', receivedThisYear, 'var(--green)', _fxSummary(receivedOrders)) +
-    stat('Total Pipeline', pipeline, 'var(--text)');
+    stat('Committed (Pending &amp; Partial)', committed, 'var(--amber)', 'ex VAT') +
+    stat('Forecast (Scheduled)', forecast, 'var(--blue)', 'ex VAT') +
+    stat('Received (This Year)', receivedThisYear, 'var(--green)', 'ex VAT') +
+    stat('Total Pipeline', pipeline, 'var(--text)', 'ex VAT');
 
   // Committed table: group by delivery month
   if (!pending.length) {
@@ -3991,13 +3966,11 @@ function renderFinancials(){
           <td style="text-align:right;font-family:var(--mono);color:var(--red)">${scrap > 0 ? '£'+scrap.toFixed(2) : '—'}</td>
         </tr>`;
       }).join('');
-      const subFx = _fxSummary(grp.orders.map(x=>x.o));
-      const subFxNote = subFx ? `<br><span style="font-size:.72rem;font-weight:400;font-family:var(--mono)">${subFx}</span>` : '';
       const subOutstanding = grp.subtotal - grp.subReceived;
       return `<tr style="background:var(--surface2)">
           <td style="font-weight:600">${grp.label}</td>
           <td colspan="3"></td>
-          <td style="text-align:right;font-family:var(--mono);font-weight:700">£${grp.subtotal.toFixed(2)}${subFxNote}</td>
+          <td style="text-align:right;font-family:var(--mono);font-weight:700">£${grp.subtotal.toFixed(2)}</td>
           <td style="text-align:right;font-family:var(--mono);font-weight:700;color:var(--green)">${grp.subReceived > 0 ? '£'+grp.subReceived.toFixed(2) : '—'}</td>
           <td style="text-align:right;font-family:var(--mono);font-weight:700;color:${subOutstanding > 0 ? 'var(--amber)' : subOutstanding < 0 ? '#c62828' : 'var(--muted)'}">${subOutstanding < 0 ? `⚠ +£${Math.abs(subOutstanding).toFixed(2)}` : '£'+subOutstanding.toFixed(2)}</td>
           <td style="text-align:right;font-family:var(--mono);font-weight:700;color:var(--green)">${grp.subAcceptable > 0 ? '£'+grp.subAcceptable.toFixed(2) : '—'}</td>
