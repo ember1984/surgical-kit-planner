@@ -3718,14 +3718,11 @@ function printFinancials(){
       const latestDelivery=ev.lines.reduce((latest,l)=>l.deliveryDateStr>latest?l.deliveryDateStr:latest,'');
       const delivMonth=latestDelivery?new Date(latestDelivery+'T00:00:00').toLocaleString('en-GB',{month:'short',year:'numeric'}):'—';
       const prods=(()=>{const t={};ev.lines.forEach(l=>{const k=l.product?.type||'Other';t[k]=(t[k]||0)+(l.qty||0);});return Object.entries(t).map(([k,q])=>`${esc(k)} ×${q}`).join(', ')||'—';})();
-      const evFxByCur={};
-      ev.lines.forEach(l=>{if(l.foreignPrice!=null&&l.ruleCurrency&&l.ruleCurrency!=='GBP') evFxByCur[l.ruleCurrency]=(evFxByCur[l.ruleCurrency]||0)+l.qty*l.foreignPrice;});
-      const evFxNote=Object.entries(evFxByCur).map(([cur,amt])=>`${_fxSymbol(cur)}${amt.toFixed(2)}\u00a0${cur}`).join(' · ');
       return `<tr>
         <td>${orderMonth}</td>
         <td>${delivMonth}</td>
         <td class="products">${prods}</td>
-        <td class="num bold">£${evTotal.toFixed(2)}${evFxNote?`<div class="fx-note">${evFxNote}</div>`:''}</td>
+        <td class="num bold">£${evTotal.toFixed(2)}</td>
       </tr>`;
     }).join('');
   }
@@ -3813,7 +3810,7 @@ function printFinancials(){
   <div class="stats-row">
     ${statCard('Committed (Pending &amp; Partial)', committed, 'var(--amber)', 'ex VAT')}
     ${statCard('Forecast (Scheduled)', forecast, 'var(--blue)', 'ex VAT')}
-    ${statCard('Received (${thisYear})', receivedThisYear, 'var(--green)', 'ex VAT')}
+    ${statCard(`Received (${thisYear})`, receivedThisYear, 'var(--green)', 'ex VAT')}
     ${statCard('Total Pipeline', pipeline, 'var(--ink)', 'ex VAT')}
   </div>
 
@@ -3989,14 +3986,11 @@ function renderFinancials(){
       const latestDelivery = ev.lines.reduce((latest, l) => l.deliveryDateStr > latest ? l.deliveryDateStr : latest, '');
       const delivMonth = latestDelivery ? new Date(latestDelivery + 'T00:00:00').toLocaleString('en-GB', {month:'short', year:'numeric'}) : '—';
       const prods = ev.lines.map(l => `${esc(l.product.code)} ×${l.qty}`).join(', ');
-      const evFxByCur = {};
-      ev.lines.forEach(l=>{ if(l.foreignPrice!=null&&l.ruleCurrency&&l.ruleCurrency!=='GBP') evFxByCur[l.ruleCurrency]=(evFxByCur[l.ruleCurrency]||0)+l.qty*l.foreignPrice; });
-      const evFxNote = Object.entries(evFxByCur).map(([cur,amt])=>`${_fxSymbol(cur)}${amt.toFixed(2)}\u00a0${cur}`).join(' · ');
       return `<tr>
         <td>${orderMonth}</td>
         <td>${delivMonth}</td>
         <td style="font-size:.8rem">${prods}</td>
-        <td style="text-align:right;font-family:var(--mono);font-weight:600">£${evTotal.toFixed(2)}${evFxNote?`<br><span style="font-weight:400;font-size:.72rem">${evFxNote}</span>`:''}</td>
+        <td style="text-align:right;font-family:var(--mono);font-weight:600">£${evTotal.toFixed(2)}</td>
       </tr>`;
     }).join('');
   }
